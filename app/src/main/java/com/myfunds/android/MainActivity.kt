@@ -276,13 +276,27 @@ class MainActivity : Activity() {
         val dcaBudget = DcaBudget.daily(portfolio.holdings, quotes)
         val dcaActiveCount = dcaBudget.plans
 
+        val dailies = selected.map { fundDailyProfit(it, quotes[it.code]) }
+        val validDailies = dailies.mapNotNull { it.first }
+        val totalDaily = if (validDailies.isNotEmpty()) validDailies.fold(BigDecimal.ZERO, BigDecimal::add) else null
+        val anyEstimated = dailies.any { it.second }
+
         // Bento Row 1: Top Asymmetric 2-Card Row
         body.addView(ui.box(vertical = ui.compact).apply {
             // Left Card: Total Asset & Profit Overview
             val leftCard = ui.bentoCard().apply {
                 addView(ui.text("持仓总额（按公布净值）", 11f, ui.muted))
                 addView(ui.text(ui.amount(summary.marketValue), 28f, ui.ink, bold = true))
-                addView(ui.text("持有收益 ${ui.signed(summary.profit)}", 12f, ui.changeColor(summary.profit), true))
+                val profitRow = ui.box(false).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    if (totalDaily != null) {
+                        val dLabel = if (anyEstimated) "今日估算" else "今日收益"
+                        addView(ui.text("$dLabel ${ui.signed(totalDaily)}", 12f, ui.changeColor(totalDaily), true))
+                        addView(ui.text("  ·  ", 11f, ui.muted))
+                    }
+                    addView(ui.text("持有收益 ${ui.signed(summary.profit)}", 12f, ui.changeColor(summary.profit), true))
+                }
+                addView(profitRow)
                 addView(ui.text("已实现 ${ui.signed(summary.realized)}", 11f, ui.changeColor(summary.realized)))
                 if (summary.missing > 0) {
                     addView(ui.text("${summary.missing} 只暂无净值，显示以成本为准", 10f, ui.muted))
@@ -371,8 +385,8 @@ class MainActivity : Activity() {
                         })
                     }
                     addView(nameBox, if (ui.compact) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f))
-                    val dateStr = q?.date ?: (h.confirmedDate ?: "暂无日期")
-                    addView(ui.text(dateStr, 11f, ui.muted))
+                    val holdingDate = portfolio.trades.filter { it.holdingId == h.id }.maxOfOrNull { it.date } ?: h.confirmedDate ?: q?.date ?: "暂无日期"
+                    addView(ui.text(holdingDate, 11f, ui.muted))
                 }
                 addView(topRow)
 
@@ -415,10 +429,19 @@ class MainActivity : Activity() {
                             setOnClickListener { setupDcaDialog(h) }
                         })
                     }
+                    val (dProfit, isEst) = fundDailyProfit(h, q)
                     val profitView = ui.box(false).apply {
                         gravity = (if (ui.compact) Gravity.START else Gravity.END) or Gravity.CENTER_VERTICAL
+                        if (dProfit != null) {
+                            val changePct = if (isEst) q?.estimateChange else q?.change
+                            val changeStr = changePct?.let { " (${ui.signed(it, "%")})" } ?: ""
+                            val dLabel = if (isEst) "今日估算 " else "今日 "
+                            addView(ui.text(dLabel, 11f, ui.muted))
+                            addView(ui.text("${ui.signed(dProfit)}$changeStr", 12f, ui.changeColor(dProfit), true))
+                            addView(ui.text("  ·  ", 11f, ui.muted))
+                        }
                         val profitColor = ui.changeColor(profit)
-                        addView(ui.text("收益 ", 11f, ui.muted))
+                        addView(ui.text("持有 ", 11f, ui.muted))
                         addView(ui.text("${ui.signed(profit)} (${ui.signed(rate, "%")})", 12f, profitColor, bold = true))
                     }
                     addView(profitView, if (ui.compact) LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) }
@@ -576,6 +599,22 @@ class MainActivity : Activity() {
             } }.show()
     }
     private fun currentEstimate(q: FundQuote?): FundQuote? = MarketMath.usableEstimate(q, today())
+    private fun fundDailyProfit(h: Holding, q: FundQuote?): Pair<BigDecimal?, Boolean> {
+        if (h.shares.signum() == 0) return BigDecimal.ZERO to false
+        val nav = q?.nav ?: return null to false
+        val est = currentEstimate(q)
+        if (est?.estimate != null && est.estimate != nav) {
+            val diff = (est.estimate!! - nav) * h.shares
+            return diff.setScale(2, java.math.RoundingMode.HALF_UP) to true
+        }
+        val change = q.change
+        if (change != null && change > BigDecimal("-100")) {
+            val prev = nav.divide(BigDecimal.ONE + change.movePointLeft(2), 16, java.math.RoundingMode.HALF_UP)
+            val diff = (nav - prev) * h.shares
+            return diff.setScale(2, java.math.RoundingMode.HALF_UP) to false
+        }
+        return null to false
+    }
     private fun refreshFunds() {
         if (refreshing) return
         if (portfolio.holdings.isEmpty()) { toast("先添加一只基金"); return }
@@ -682,19 +721,20 @@ class MainActivity : Activity() {
     }
     private fun editHolding(h: Holding) {
         val shares = ui.field("已确认持有份额", h.shares.toPlainString(), true); val cost = ui.field("平均单位成本", h.cost.toPlainString(), true)
-        val initial = portfolio.trades.none { it.holdingId == h.id }
-        val baseline = datePickerField("结算日期（点击切换选项）", h.confirmedDate ?: today())
-        form("${h.name} · 持仓", if (initial) listOf(shares, cost, baseline) else listOf(shares, cost), "首次录入为起始快照，请选择结算日期；已有记录时修改会记为今天的持仓校准。") {
-            val qty = decimal(shares); val price = decimal(cost)
-            val next = if (portfolio.trades.any { it.holdingId == h.id }) PortfolioOperations.calibrate(portfolio, h.id, qty, price, today())
-                else portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(shares = qty, cost = price, confirmedDate = baseline.text.toString().trim(), initialShares = qty) else it })
+        val latestDate = portfolio.trades.filter { it.holdingId == h.id }.maxOfOrNull { it.date } ?: h.confirmedDate ?: today()
+        val baseline = datePickerField("结算日期（点击切换选项）", latestDate)
+        form("${h.name} · 编辑持仓", listOf(shares, cost, baseline), "请确认持有份额、平均成本与结算日期。") {
+            val qty = decimal(shares); val price = decimal(cost); val date = baseline.text.toString().trim()
+            val next = if (portfolio.trades.any { it.holdingId == h.id }) PortfolioOperations.calibrate(portfolio, h.id, qty, price, date)
+                else portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(shares = qty, cost = price, confirmedDate = date, initialShares = qty) else it })
             commit(next)
         }
     }
     private fun transaction(h: Holding, kind: String) {
         val shares = ui.field(if (kind == "CALIBRATE") "校准后份额" else "已确认成交份额", numeric = true)
         val price = ui.field(if (kind == "CALIBRATE") "校准后平均成本" else "成交单位净值", numeric = true)
-        val fee = ui.field("手续费（元）", "0", true); val date = datePickerField("结算日期（点击切换选项）", today())
+        val defaultDate = if (kind == "CALIBRATE") portfolio.trades.filter { it.holdingId == h.id }.maxOfOrNull { it.date } ?: h.confirmedDate ?: today() else today()
+        val fee = ui.field("手续费（元）", "0", true); val date = datePickerField("结算日期（点击切换选项）", defaultDate)
         form("${when (kind) { "BUY" -> "加仓"; "SELL" -> "减仓"; else -> "持仓校准" }} · ${h.name}", if (kind == "CALIBRATE") listOf(shares, price, date) else listOf(shares, price, fee, date), "只记录已确认的交易，不会发起实际买卖。") {
             val qty = decimal(shares); val value = decimal(price); val day = date.text.toString().trim()
             commit(when (kind) {
@@ -733,7 +773,8 @@ class MainActivity : Activity() {
         val subRow = ui.box(false).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(ui.badge(h.code, ui.accent))
-            addView(ui.text("  ·  导入/基准日期 ${h.confirmedDate ?: "未记录"}", 12f, ui.muted))
+            val latestDate = portfolio.trades.filter { it.holdingId == h.id }.maxOfOrNull { it.date } ?: h.confirmedDate ?: "未记录"
+            addView(ui.text("  ·  结算日期 $latestDate", 12f, ui.muted))
         }
         container.addView(subRow)
 
@@ -756,8 +797,14 @@ class MainActivity : Activity() {
             }
             addView(grid2)
 
+            val (dProfit, isEst) = fundDailyProfit(h, q)
             val grid3 = ui.box(false).apply {
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
+                if (dProfit != null) {
+                    val changePct = if (isEst) q?.estimateChange else q?.change
+                    val changeStr = changePct?.let { " (${ui.signed(it, "%")})" } ?: ""
+                    ui.stat(this, if (isEst) "今日估算收益" else "今日收益", "${ui.signed(dProfit)} 元$changeStr", ui.changeColor(dProfit))
+                }
                 ui.stat(this, "持有盈亏金额", "${ui.signed(profit)} 元", ui.changeColor(profit))
                 ui.stat(this, "持有收益率", ui.signed(rate, "%"), ui.changeColor(rate))
             }
