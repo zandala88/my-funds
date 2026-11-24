@@ -53,7 +53,7 @@ data class Portfolio(val holdings: List<Holding> = emptyList(),
             require(it.date >= (latest[it.holdingId] ?: "")) { "同一基金的操作日期不能倒序" }
             latest[it.holdingId] = it.date
         }
-        require(settings.sort in listOf("manual", "name", "profit", "change")) { "排序设置无效" }
+        require(settings.sort in listOf("manual", "custom", "name", "profit", "change")) { "排序设置无效" }
         require(settings.indexCodes.size <= 12 && settings.indexCodes.distinct().size == settings.indexCodes.size &&
             settings.indexCodes.all { it.matches(Regex("[01]\\.[0-9]{6}")) }) { "指数设置无效" }
         return this
@@ -149,6 +149,7 @@ object PortfolioMath {
         if (settings.showCost) add("平均成本" to h.cost)
     }
     fun sorted(p: Portfolio, quotes: Map<String, FundQuote>, today: String): List<Holding> = when (p.settings.sort) {
+        "custom" -> p.holdings.sortedBy { it.order }
         "name" -> p.holdings.sortedBy { it.name }
         "profit" -> p.holdings.sortedWith(compareByDescending { h -> quotes[h.code]?.nav?.let { (it - h.cost) * h.shares } })
         "change" -> p.holdings.sortedWith(compareByDescending { MarketMath.usableEstimate(quotes[it.code], today)?.estimateChange ?: quotes[it.code]?.change })

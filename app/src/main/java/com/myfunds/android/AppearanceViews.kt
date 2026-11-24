@@ -23,8 +23,9 @@ private fun Ui.choiceRow(label: String, selected: Boolean, preview: View): View 
             addView(RadioButton(context).apply {
                 isChecked = selected; buttonTintList = ColorStateList.valueOf(accent)
                 isClickable = false; isFocusable = false; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                minWidth = 0; minimumWidth = 0; minHeight = 0; minimumHeight = 0
-            }, LinearLayout.LayoutParams(dp(26), dp(26)))
+                setPadding(0, 0, 0, 0); background = null
+                minWidth = dp(32); minimumWidth = dp(32); minHeight = dp(32); minimumHeight = dp(32)
+            }, LinearLayout.LayoutParams(-2, -2))
         })
         addView(preview, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
     }, LinearLayout.LayoutParams(-1, -2))

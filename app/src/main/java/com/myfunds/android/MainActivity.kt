@@ -39,8 +39,26 @@ class MainActivity : Activity() {
     private var scrollY = 0
     private var homeScrollY = 0
     private var backRegistration: Any? = null
+    private var editing = false
+    private val checkedHoldings = linkedSetOf<String>()
+    private val visibleEditChecks = mutableMapOf<String, CheckBox>()
+    private var editSelectionSync = false
+    private var editCheckAll: CheckBox? = null
+    private var editDeleteButton: Button? = null
+    private var editStatus: TextView? = null
+    private var editScroller: ScrollView? = null
+    private var draggedHolding: String? = null
+    private var dragScrollStep = 0
+    private var editorRenderDeferred = false
     private var pendingScreenshotRows: String? = null
     private val handler = Handler(Looper.getMainLooper())
+    private val dragScroll = object : Runnable {
+        override fun run() {
+            if (active && editing && draggedHolding != null && dragScrollStep != 0) {
+                editScroller?.scrollBy(0, dragScrollStep); handler.postDelayed(this, 32)
+            }
+        }
+    }
     private val executor = Executors.newFixedThreadPool(2)
     private val client = MarketClient()
     private val networkJobs = mutableListOf<Future<*>>()
@@ -58,6 +76,9 @@ class MainActivity : Activity() {
         scrollY = savedInstanceState?.getInt("scrollY") ?: 0
         homeScrollY = savedInstanceState?.getInt("homeScrollY") ?: 0
         pendingScreenshotRows = savedInstanceState?.getString("pendingScreenshotRows")
+        holdingPage = savedInstanceState?.getInt("holdingPage") ?: 0
+        editing = savedInstanceState?.getBoolean("editing") ?: false
+        checkedHoldings.addAll(savedInstanceState?.getStringArrayList("checkedHoldings").orEmpty())
         store = LocalStore(this)
         try { portfolio = store.load(); quotes = store.loadQuotes() }
         catch (_: Exception) {
@@ -72,6 +93,7 @@ class MainActivity : Activity() {
             insets
         }
         window.decorView.requestApplyInsets()
+        if (savedInstanceState?.getBoolean("editSelectionCleared") == true) toast("选择条目过多，请重新勾选后再删除")
     }
     override fun onStart() {
         super.onStart(); active = true
@@ -84,6 +106,10 @@ class MainActivity : Activity() {
         pendingScreenshotRows?.let { outState.putString("pendingScreenshotRows", it) }
         group?.let { outState.putString("selectedGroup", it) }
         outState.putInt("selectedTab", tab)
+        outState.putInt("holdingPage", holdingPage)
+        outState.putBoolean("editing", editing)
+        if (checkedHoldings.sumOf { it.length } <= 24000) outState.putStringArrayList("checkedHoldings", ArrayList(checkedHoldings))
+        else outState.putBoolean("editSelectionCleared", true)
         outState.putInt("scrollY", scrollY)
         outState.putInt("homeScrollY", homeScrollY)
         super.onSaveInstanceState(outState)
@@ -106,7 +132,7 @@ class MainActivity : Activity() {
         }
     }
     override fun onStop() {
-        active = false; generation++; refreshing = false; handler.removeCallbacks(refreshLoop)
+        active = false; endEditorDrag(false); generation++; refreshing = false; handler.removeCallbacks(refreshLoop)
         networkJobs.forEach { it.cancel(true) }; networkJobs.clear(); client.cancelAll()
         super.onStop()
     }
@@ -154,6 +180,9 @@ class MainActivity : Activity() {
         }
     }
     private fun render() {
+        if (editing && draggedHolding != null) { editorRenderDeferred = true; return }
+        editCheckAll = null; editDeleteButton = null; editStatus = null; editScroller = null
+        visibleEditChecks.clear()
         ui = Ui(this, portfolio.settings.darkMode, portfolio.settings.redUp, portfolio.settings.displaySize)
         root = ui.box().apply { setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(8)); setBackgroundColor(ui.background) }
         window.statusBarColor = ui.background; window.navigationBarColor = ui.background
@@ -161,8 +190,10 @@ class MainActivity : Activity() {
         root.addView(ui.text(if (tab == 0) "拾盈 · 个人基金簿" else "本机与备份", 12f, ui.muted))
         root.addView(ui.box(false).apply {
             gravity = Gravity.CENTER_VERTICAL
-            addView(ui.text(if (tab == 0) "我的自选" else "设置", 29f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
-            if (tab == 0) {
+            addView(ui.text(if (editing) "编辑自选" else if (tab == 0) "我的自选" else "设置", 29f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+            if (editing) {
+                addView(ui.button("完成", primary = true) { finishEditing() })
+            } else if (tab == 0) {
                 val refreshBtn = ui.iconButton(R.drawable.ic_refresh, "刷新") { refreshFunds() }
                 if (refreshing) {
                     val anim = android.view.animation.RotateAnimation(0f, 360f, android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f, android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f).apply {
@@ -181,15 +212,18 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams(ui.headerActionSize, ui.headerActionSize))
             }
         })
-        root.addView(ui.text(if (tab == 0) status else "数据存在本机，换机用文件恢复", 12f, ui.muted).apply { maxLines = 2 })
+        val statusLine = ui.text(if (tab == 0) status else "数据存在本机，换机用文件恢复", 12f, ui.muted).apply { maxLines = 2 }
+        root.addView(statusLine)
+        if (editing) { editStatus = statusLine; root.addView(editorControls()) }
         body = ui.box().apply { setPadding(0, ui.dp(18), 0, ui.dp(10)) }
         val scroller = ScrollView(this).apply { isFillViewport = true; addView(body) }
         root.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
-        if (tab == 0) holdingsPage() else settingsPage()
+        if (editing) { editScroller = scroller; editingPage() }
+        else if (tab == 0) holdingsPage() else settingsPage()
         setContentView(root); root.requestApplyInsets()
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            if (tab == 1 && backRegistration == null) backRegistration = Api33Back.register(this)
-            if (tab == 0) { backRegistration?.let { Api33Back.unregister(this, it) }; backRegistration = null }
+            if ((tab == 1 || editing) && backRegistration == null) backRegistration = Api33Back.register(this)
+            if (tab == 0 && !editing) { backRegistration?.let { Api33Back.unregister(this, it) }; backRegistration = null }
         }
         val targetScrollY = scrollY
         if (targetScrollY > 0) {
@@ -202,7 +236,7 @@ class MainActivity : Activity() {
     @android.annotation.TargetApi(33)
     private object Api33Back {
         fun register(activity: MainActivity): Any {
-            val callback = android.window.OnBackInvokedCallback { activity.returnToHoldings() }
+            val callback = android.window.OnBackInvokedCallback { activity.handleInternalBack() }
             activity.onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
             return callback
         }
@@ -211,8 +245,9 @@ class MainActivity : Activity() {
         }
     }
     private fun returnToHoldings() { tab = 0; scrollY = homeScrollY; render() }
+    private fun handleInternalBack() { if (editing) finishEditing() else returnToHoldings() }
     @Deprecated("Compatible platform back navigation")
-    override fun onBackPressed() { if (tab == 1) returnToHoldings() else super.onBackPressed() }
+    override fun onBackPressed() { if (tab == 1 || editing) handleInternalBack() else super.onBackPressed() }
     private fun holdingsPage() {
         val selected = portfolio.holdings.filter { group == null || it.groupId == group }
         val filtered = portfolio.copy(holdings = selected, trades = portfolio.trades.filter { t -> selected.any { it.id == t.holdingId } })
@@ -282,6 +317,12 @@ class MainActivity : Activity() {
 
         val sorted = PortfolioMath.sorted(portfolio.copy(holdings = selected), quotes, today())
         holdingPage = holdingPage.coerceIn(0, ((sorted.size - 1).coerceAtLeast(0) / 50))
+        body.addView(ui.box(false).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(ui.text("基金列表 · ${sorted.size} 只", 14f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(ui.button("编辑") { enterEditing() }.apply { isEnabled = sorted.isNotEmpty(); alpha = if (isEnabled) 1f else 0.4f })
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) }
+        })
         if (sorted.isEmpty()) body.addView(ui.centered("添加或截图导入你关注的基金\n随时随地掌握个人持仓与定投"))
 
         sorted.drop(holdingPage * 50).take(50).forEach { h ->
@@ -377,6 +418,123 @@ class MainActivity : Activity() {
         })
         body.addView(ui.text("点击基金查看本地导入记账明细 · 长按管理持仓与定投", 11f, ui.muted))
     }
+    private fun editorHoldings() = portfolio.holdings.filter { group == null || it.groupId == group }.sortedBy { it.order }
+    private fun enterEditing() = safe {
+        check(!importing) { "正在处理备份，请稍候" }
+        val visible = portfolio.holdings.filter { group == null || it.groupId == group }
+        if (visible.isEmpty()) return@safe
+        val ids = PortfolioMath.sorted(portfolio.copy(holdings = visible), quotes, today()).map { it.id }
+        val next = PortfolioEditing.reorder(portfolio, ids, group)
+        store.save(next); portfolio = next; editing = true; checkedHoldings.clear(); render()
+    }
+    private fun finishEditing() { endEditorDrag(false); editing = false; checkedHoldings.clear(); render() }
+    private fun editorControls() = ui.box(false).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        val all = CheckBox(ui.context).apply {
+            contentDescription = "全选基金"; setTextColor(ui.ink)
+            buttonTintList = android.content.res.ColorStateList.valueOf(ui.accent); minHeight = ui.touchTarget
+            setOnCheckedChangeListener { _, checked ->
+                if (!editSelectionSync) {
+                    val ids = editorHoldings().map { it.id }
+                    if (checked) checkedHoldings.addAll(ids) else checkedHoldings.removeAll(ids.toSet())
+                    editSelectionSync = true
+                    try { visibleEditChecks.forEach { (id, box) -> box.isChecked = id in checkedHoldings } }
+                    finally { editSelectionSync = false }
+                    updateEditorSelection()
+                }
+            }
+        }
+        editCheckAll = all
+        addView(all, LinearLayout.LayoutParams(0, -2, 1f))
+        val delete = ui.button("删除 0") { confirmBulkDelete() }.apply { setTextColor(ui.rose) }
+        editDeleteButton = delete; addView(delete)
+    }
+    private fun updateEditorSelection() {
+        val ids = editorHoldings().map { it.id }.toSet()
+        checkedHoldings.retainAll(ids)
+        editSelectionSync = true
+        try {
+            editCheckAll?.apply { text = "全选 (${ids.size})"; isEnabled = ids.isNotEmpty(); isChecked = ids.isNotEmpty() && checkedHoldings.size == ids.size }
+        } finally { editSelectionSync = false }
+        editDeleteButton?.apply { text = "删除 ${checkedHoldings.size}"; isEnabled = checkedHoldings.isNotEmpty(); alpha = if (isEnabled) 1f else 0.4f }
+        val label = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
+        editStatus?.text = "$label · 已选 ${checkedHoldings.size}/${ids.size} · 顺序更改自动保存"
+    }
+    private fun editingPage() {
+        val holdings = editorHoldings()
+        checkedHoldings.retainAll(holdings.map { it.id }.toSet())
+        holdingPage = holdingPage.coerceIn(0, (holdings.size - 1).coerceAtLeast(0) / 50)
+        body.addView(ui.text("长按右侧手柄拖动，或使用上移 / 下移。点击卡片可勾选。", 12f, ui.muted).apply { setPadding(0, 0, 0, ui.dp(10)) })
+        if (holdings.isEmpty()) body.addView(ui.centered("当前列表为空"))
+        holdings.drop(holdingPage * 50).take(50).forEachIndexed { offset, h ->
+            val row = ui.holdingEditorRow(h, holdingPage * 50 + offset, holdings.size, h.id in checkedHoldings,
+                { checked ->
+                    if (!editSelectionSync) { if (checked) checkedHoldings.add(h.id) else checkedHoldings.remove(h.id); updateEditorSelection() }
+                }, { delta -> safe {
+                    val index = editorHoldings().indexOfFirst { it.id == h.id }
+                    val target = index + delta
+                    holdingPage = target.coerceAtLeast(0) / 50
+                    commit(PortfolioEditing.move(portfolio, h.id, target, group))
+                } }, { view ->
+                    if (!active || !editing) false else {
+                        draggedHolding = h.id
+                        val started = view.startDragAndDrop(android.content.ClipData.newPlainText("holding", h.id), View.DragShadowBuilder(view), h.id, 0)
+                        if (!started) endEditorDrag(false)
+                        started
+                    }
+                })
+            visibleEditChecks[h.id] = row.check
+            row.view.setOnDragListener { view, event -> editorDrag(view, event, h.id) }
+            body.addView(row.view)
+        }
+        if (holdings.size > 50) body.addView(ui.box(false).apply {
+            addView(ui.button("上一页") { holdingPage = (holdingPage - 1).coerceAtLeast(0); scrollY = 0; render() }, LinearLayout.LayoutParams(0,-2,1f))
+            addView(ui.text("${holdingPage + 1} / ${(holdings.size + 49) / 50}"))
+            addView(ui.button("下一页") { holdingPage = (holdingPage + 1).coerceAtMost((holdings.size - 1) / 50); scrollY = 0; render() }, LinearLayout.LayoutParams(0,-2,1f))
+        })
+        updateEditorSelection()
+    }
+    private fun editorDrag(view: View, event: android.view.DragEvent, targetId: String): Boolean {
+        val id = event.localState as? String ?: return false
+        if (!editing || !active) return false
+        when (event.action) {
+            android.view.DragEvent.ACTION_DRAG_STARTED -> return editorHoldings().any { it.id == id }
+            android.view.DragEvent.ACTION_DRAG_ENTERED -> ui.round(view, ui.soft, 18, ui.accent, 2)
+            android.view.DragEvent.ACTION_DRAG_EXITED -> ui.round(view, radius = 18)
+            android.view.DragEvent.ACTION_DRAG_LOCATION -> {
+                val scroller = editScroller ?: return false
+                val rowLocation = IntArray(2); val scrollLocation = IntArray(2)
+                view.getLocationOnScreen(rowLocation); scroller.getLocationOnScreen(scrollLocation)
+                val y = rowLocation[1] + event.y - scrollLocation[1]
+                val step = when { y < ui.dp(64) -> -ui.dp(8); y > scroller.height - ui.dp(64) -> ui.dp(8); else -> 0 }
+                if (step != dragScrollStep) { dragScrollStep = step; handler.removeCallbacks(dragScroll); if (step != 0) handler.post(dragScroll) }
+            }
+            android.view.DragEvent.ACTION_DROP -> {
+                val target = editorHoldings().indexOfFirst { it.id == targetId }
+                endEditorDrag(false)
+                if (target >= 0 && id != targetId) safe { commit(PortfolioEditing.move(portfolio, id, target, group)) }
+                else render()
+            }
+            android.view.DragEvent.ACTION_DRAG_ENDED -> { ui.round(view, radius = 18); endEditorDrag(true) }
+        }
+        return true
+    }
+    private fun endEditorDrag(renderDeferred: Boolean) {
+        draggedHolding = null; dragScrollStep = 0; handler.removeCallbacks(dragScroll)
+        val pending = editorRenderDeferred; editorRenderDeferred = false
+        if (pending && renderDeferred) handler.post { if (editing && active && !isDestroyed) render() }
+    }
+    private fun confirmBulkDelete() {
+        val ids = checkedHoldings.toSet()
+        if (ids.isEmpty()) return
+        val records = portfolio.trades.count { it.holdingId in ids }
+        ui.dialog().setTitle("删除选中的 ${ids.size} 只基金？")
+            .setMessage("同时删除对应的 $records 条本机操作记录及定投计划。未选基金保留。")
+            .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ -> safe {
+                check(active && editing && !isDestroyed) { "请重新进入编辑模式" }
+                commit(PortfolioEditing.delete(portfolio, ids))
+            } }.show()
+    }
     private fun currentEstimate(q: FundQuote?): FundQuote? = MarketMath.usableEstimate(q, today())
     private fun refreshFunds() {
         if (refreshing) return
@@ -392,8 +550,8 @@ class MainActivity : Activity() {
         }, { error -> refreshing = false; status = "$error · 显示本机缓存"; if (tab == 0) render() })
     }
     private fun sortDialog() {
-        val values = listOf("manual", "name", "profit", "change")
-        ui.dialog().setTitle("排序方式").setItems(arrayOf("自定义 / 关注优先", "基金名称", "持有收益", "涨跌幅")) { _, i -> safe { commit(portfolio.copy(settings = portfolio.settings.copy(sort = values[i]))) } }.show()
+        val values = listOf("custom", "manual", "name", "profit", "change")
+        ui.dialog().setTitle("排序方式").setItems(arrayOf("自定义顺序", "关注优先", "基金名称", "持有收益", "涨跌幅")) { _, i -> safe { commit(portfolio.copy(settings = portfolio.settings.copy(sort = values[i]))) } }.show()
     }
     private fun chooseGroup() {
         val labels = listOf("全部基金") + portfolio.groups.map { it.name } + "管理分组"
@@ -518,7 +676,7 @@ class MainActivity : Activity() {
                 5 -> transaction(h, "CALIBRATE")
                 6 -> commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(starred = !it.starred) else it }))
                 7 -> ui.dialog().setTitle("移动到分组").setItems(portfolio.groups.map { it.name }.toTypedArray()) { _, g -> safe { commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(groupId = portfolio.groups[g].id) else it })) } }.show()
-                8 -> commit(portfolio.copy(holdings = (listOf(h) + portfolio.holdings.filter { it.id != h.id }).mapIndexed { n, item -> item.copy(order = n) }))
+                8 -> commit(PortfolioEditing.reorder(portfolio, listOf(h.id) + PortfolioMath.sorted(portfolio, quotes, today()).filter { it.id != h.id }.map { it.id }))
                 9 -> ui.dialog().setTitle("删除 ${h.name}？").setMessage("同时删除该基金的本机操作记录。建议先导出备份。")
                     .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ -> safe { commit(portfolio.copy(holdings = portfolio.holdings.filter { it.id != h.id }, trades = portfolio.trades.filter { it.holdingId != h.id })) } }.show()
             }
@@ -778,7 +936,7 @@ class MainActivity : Activity() {
             addView(ui.text("本机数据", 18f, bold = true))
             addView(ui.text("${portfolio.holdings.size} 只基金 · ${portfolio.trades.size} 条操作记录\n行情来源：东方财富 / 天天基金\n无账号、广告、推送或后台常驻服务", 12f, ui.muted))
             addView(ui.button("清理基金缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); toast("基金缓存已清理，持仓数据保留"); render() } })
-            addView(ui.text("拾盈 0.6.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.text("拾盈 0.7.0 · 原生安卓", 11f, ui.muted))
             addView(ui.button("开源许可与识别模型") {
                 safe {
                     val notice = assets.list("licenses").orEmpty().sorted().joinToString("\n\n") { name ->
