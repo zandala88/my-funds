@@ -8,7 +8,7 @@ data class HoldingCandidate(val name: String, val code: String?, val shares: Big
     val amount: BigDecimal?, val profit: BigDecimal?, val issues: List<String>, val confirmedDate: String? = null)
 
 object HoldingsOcr {
-    private val codePattern = Regex("(?<![\\p{L}\\p{N}.,])[0-9]{6}(?![\\p{L}\\p{N}.,])")
+    private val codePattern = Regex("(?<![A-Za-z0-9.,])[0-9]{6}(?![A-Za-z0-9.,])")
     private val codeLabel = Regex("(?:基金代码|代码)[:：\\s]*([0-9]{6})(?![0-9])")
     private val numberPattern = Regex("^[￥¥]?\\s*([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]+)?)(?:\\s*[份元])?$")
     private val labels = linkedMapOf(
@@ -19,6 +19,7 @@ object HoldingsOcr {
     private val metricPattern = Regex(labels.keys.joinToString("|") { if (it == "份额") "(?<![\u4e00-\u9fff])份额" else Regex.escape(it) })
     private val totalRow = Regex("^(?:(?:基金|持仓|账户)?(?:总资产|总金额|总市值|总收益)|资产合计|持仓合计|账户合计)")
     private val dateLabel = Regex("^(?:持仓确认日期|份额确认日期|确认日期|持仓日期)[:：\\s]*(.*)$")
+    private val navDatePattern = Regex("(?:基金净值|单位净值|净值)[^()（）]*[（(]([0-9]{1,2}-[0-9]{1,2}|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2})[）)]")
     private data class Draft(var name: String = "", var code: String? = null, var date: String? = null, val values: MutableMap<String, BigDecimal> = mutableMapOf())
     fun parse(text: String): List<HoldingCandidate> = parse(text.lines().take(3000).mapIndexed { i, s -> OcrLine(s, 0, i * 40, 1000, i * 40 + 30) })
 
@@ -66,7 +67,10 @@ object HoldingsOcr {
             val possibleName = cleanName(text.substringBeforeMetric(metrics.firstOrNull()?.range?.first).replace(codeLabel, "").let { codePattern.replace(it, "") })
             val isName = isFundName(possibleName)
             val explicitCode = codeLabel.find(text)?.groupValues?.get(1)
-            val code = explicitCode ?: if (metrics.isEmpty() && (isName || (draft?.name?.isNotBlank() == true && draft?.code == null && text.matches(Regex("[0-9]{6}"))))) codePattern.find(text)?.value else null
+            val code = explicitCode ?: if (metrics.isEmpty() && (isName || (draft?.name?.isNotBlank() == true && draft?.code == null))) {
+                val candidate = codePattern.find(text)?.value
+                if (candidate != null && !text.contains('.') && !text.contains('%') && !text.contains('¥') && !text.contains('￥') && !text.contains(',')) candidate else null
+            } else null
             if (isName) {
                 if (draft?.name?.isNotBlank() == true) finish()
                 if (draft?.name?.isBlank() != true) draft = Draft()
@@ -77,12 +81,17 @@ object HoldingsOcr {
                 draft!!.code = code; pending = null
             }
             val current = draft ?: continue
+            val navDate = navDatePattern.find(text)?.groupValues?.get(1)
+            if (navDate != null && current.date == null) {
+                current.date = parseDate(navDate)
+            }
             if (metrics.isNotEmpty()) {
                 pending = null
                 metrics.forEachIndexed { i, match ->
+                    if (match.value == "金额" && text.substring(0, match.range.first).endsWith("待确认")) return@forEachIndexed
                     val key = labels.getValue(match.value)
                     val end = metrics.getOrNull(i + 1)?.range?.first ?: text.length
-                    val span = text.substring(match.range.last + 1, end).replace(Regex("[（(](元|份)[）)]"), "").trim().trimStart(':', '：').trim()
+                    val span = text.substring(match.range.last + 1, end).replace(Regex("[（(](元|份)[）)]|[①②③④⑤⑥⑦⑧⑨⑩ⓘ?]"), "").trim().trimStart(':', '：').trim()
                     val value = parseNumber(span)
                     if (value != null && (key in listOf("profit", "amount") || value.signum() >= 0)) current.values[key] = value
                     else if (metrics.size == 1 && span.isBlank()) pending = key
@@ -108,7 +117,14 @@ object HoldingsOcr {
         return clean.toBigDecimalOrNull()?.takeIf { it.precision() <= 32 && it.scale() in 0..18 }
     }
     private fun parseDate(raw: String): String? = runCatching {
-        val values = raw.trim().split(Regex("[-/.]")); require(values.size == 3)
-        LocalDate.of(values[0].toInt(), values[1].toInt(), values[2].toInt()).toString()
+        val values = raw.trim().split(Regex("[-/.]"))
+        if (values.size == 3) {
+            LocalDate.of(values[0].toInt(), values[1].toInt(), values[2].toInt()).toString()
+        } else if (values.size == 2) {
+            val now = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))
+            var d = LocalDate.of(now.year, values[0].toInt(), values[1].toInt())
+            if (d.isAfter(now)) d = d.minusYears(1)
+            d.toString()
+        } else null
     }.getOrNull()
 }

@@ -13,47 +13,76 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 
 class Ui(val context: Context, val dark: Boolean) {
-    val background = Color.parseColor(if (dark) "#111C19" else "#F6F8F4")
-    val card = Color.parseColor(if (dark) "#1C2A25" else "#FFFFFF")
-    val soft = Color.parseColor(if (dark) "#283A31" else "#EAF0E8")
-    val ink = Color.parseColor(if (dark) "#E8F2EA" else "#1B352A")
-    val muted = Color.parseColor(if (dark) "#A8B9AD" else "#748477")
-    val accent = Color.parseColor(if (dark) "#BADFC4" else "#27694E")
+    val background = Color.parseColor(if (dark) "#0F172A" else "#F1F5F9")
+    val card = Color.parseColor(if (dark) "#1E293B" else "#FFFFFF")
+    val soft = Color.parseColor(if (dark) "#334155" else "#E2E8F0")
+    val ink = Color.parseColor(if (dark) "#F8FAFC" else "#0F172A")
+    val muted = Color.parseColor(if (dark) "#94A3B8" else "#64748B")
+    val accent = Color.parseColor(if (dark) "#818CF8" else "#4F46E5")
+    val border = Color.parseColor(if (dark) "#334155" else "#CBD5E1")
+    val green = Color.parseColor(if (dark) "#34D399" else "#059669")
+    val rose = Color.parseColor(if (dark) "#FB7185" else "#E11D48")
     fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
     fun box(vertical: Boolean = true) = LinearLayout(context).apply { orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
     fun text(value: String, size: Float = 14f, color: Int = ink, bold: Boolean = false) = TextView(context).apply {
         text = value; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, dp(3), 0, dp(3))
+        setPadding(0, dp(2), 0, dp(2))
     }
-    private fun shape(fill: Int, radius: Int) = GradientDrawable().apply { setColor(fill); cornerRadius = dp(radius).toFloat() }
+    fun shape(fill: Int, radius: Int, strokeColor: Int = 0, strokeWidth: Int = 0) = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = dp(radius).toFloat()
+        if (strokeWidth > 0) setStroke(dp(strokeWidth), strokeColor)
+    }
     fun button(value: String, primary: Boolean = false, action: () -> Unit) = Button(context).apply {
         text = value; isAllCaps = false; textSize = 13f; minWidth = 0; minimumWidth = 0
-        minHeight = dp(52); minimumHeight = dp(52); includeFontPadding = false
-        setTextColor(if (primary) if (dark) Color.parseColor("#153523") else Color.WHITE else accent)
+        minHeight = dp(46); minimumHeight = dp(46); includeFontPadding = false
+        setTextColor(if (primary) Color.WHITE else if (dark) Color.parseColor("#E2E8F0") else accent)
         val fill = if (primary) accent else soft
-        background = InsetDrawable(RippleDrawable(ColorStateList.valueOf(if (dark) 0x33FFFFFF else 0x221B352A), shape(fill, 30), shape(Color.WHITE, 30)), dp(3), dp(4), dp(3), dp(4))
-        stateListAnimator = null; elevation = 0f; setPadding(dp(14), dp(9), dp(14), dp(9))
+        background = InsetDrawable(RippleDrawable(ColorStateList.valueOf(if (dark) 0x33FFFFFF else 0x221B352A), shape(fill, 23), shape(Color.WHITE, 23)), dp(2), dp(2), dp(2), dp(2))
+        stateListAnimator = null; elevation = 0f; setPadding(dp(14), dp(8), dp(14), dp(8))
+        setOnClickListener { action() }
+    }
+    fun iconButton(resId: Int, contentDesc: String, action: () -> Unit) = ImageButton(context).apply {
+        setImageResource(resId)
+        contentDescription = contentDesc
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        val size = dp(44)
+        minimumWidth = size
+        minimumHeight = size
+        imageTintList = ColorStateList.valueOf(accent)
+        val fill = soft
+        background = InsetDrawable(RippleDrawable(ColorStateList.valueOf(if (dark) 0x33FFFFFF else 0x221B352A), shape(fill, 22), shape(Color.WHITE, 22)), dp(2), dp(2), dp(2), dp(2))
+        stateListAnimator = null; elevation = 0f
         setOnClickListener { action() }
     }
     fun field(hintText: String, value: String = "", numeric: Boolean = false) = EditText(context).apply {
         hint = hintText; setText(value); textSize = 15f; setTextColor(ink); setHintTextColor(muted)
         setSingleLine(true)
-        background = shape(soft, 15); setPadding(dp(14), dp(12), dp(14), dp(12)); minHeight = dp(48)
+        background = shape(soft, 14, border, 1); setPadding(dp(14), dp(10), dp(14), dp(10)); minHeight = dp(46)
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }
         if (numeric) inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
     }
-    fun round(view: android.view.View, color: Int = card, radius: Int = 28) {
-        view.background = shape(color, radius)
+    fun round(view: android.view.View, color: Int = card, radius: Int = 22, strokeColor: Int = border, strokeWidth: Int = 1) {
+        view.background = shape(color, radius, strokeColor, strokeWidth)
     }
-    fun panel() = box().apply {
-        setPadding(dp(20), dp(18), dp(20), dp(18)); round(this)
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) }
+    fun panel(radius: Int = 22) = box().apply {
+        setPadding(dp(18), dp(16), dp(18), dp(16)); round(this, card, radius, border, 1)
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
+    }
+    fun bentoCard(radius: Int = 20, bgColor: Int = card) = box().apply {
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        round(this, bgColor, radius, border, 1)
+    }
+    fun badge(badgeText: String, textColor: Int = accent, bgColor: Int = if (dark) Color.parseColor("#1E1B4B") else Color.parseColor("#EEF2FF")) = TextView(context).apply {
+        text = badgeText; textSize = 11f; setTextColor(textColor); setTypeface(typeface, Typeface.BOLD)
+        setPadding(dp(8), dp(3), dp(8), dp(3))
+        background = shape(bgColor, 8)
     }
     fun amount(n: BigDecimal?, digits: Int = 2): String = n?.setScale(digits, RoundingMode.HALF_UP)?.toPlainString() ?: "—"
     fun signed(n: BigDecimal?, suffix: String = ""): String = n?.let { (if (it > BigDecimal.ZERO) "+" else "") + amount(it) + suffix } ?: "暂无"
-    fun changeColor(n: BigDecimal?): Int = when { n == null || n.signum() == 0 -> muted; n.signum() > 0 -> Color.parseColor(if (dark) "#FF9B88" else "#C65C4F"); else -> accent }
+    fun changeColor(n: BigDecimal?): Int = when { n == null || n.signum() == 0 -> muted; n.signum() > 0 -> rose; else -> green }
     fun stat(parent: LinearLayout, label: String, value: String, color: Int = ink) {
-        parent.addView(box().apply { addView(text(label, 12f, muted)); addView(text(value, 18f, color, true)) }, LinearLayout.LayoutParams(0, -2, 1f))
+        parent.addView(box().apply { addView(text(label, 11f, muted)); addView(text(value, 16f, color, true)) }, LinearLayout.LayoutParams(0, -2, 1f))
     }
     fun centered(value: String) = text(value, 14f, muted).apply { gravity = Gravity.CENTER; setPadding(dp(12), dp(32), dp(12), dp(32)) }
 }

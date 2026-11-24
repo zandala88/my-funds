@@ -126,4 +126,26 @@ class HoldingsOcrTest {
         assertEquals(draft, OcrDraftCodec.decode(OcrDraftCodec.encode(draft)))
         assertThrows(IllegalArgumentException::class.java) { OcrDraftCodec.decode("broken") }
     }
+    @Test fun extractsCodeWithRiskLevelAndNavDate() {
+        val raw = """
+            资产详情
+            国泰纳斯达克100指数(QDII)
+            160213 中高风险 详情
+            金额(元)
+            1,371.34
+            昨日收益(元)① 持有收益(元)① 持有收益率①
+            -80.82 -268.66 -16.38%
+            持有金额 1,371.34 待确认金额 0.00
+            持仓成本价 4.4847 持有份额 365.69
+            日涨幅 -5.57% 基金净值 3.7500(11-20)
+        """.trimIndent()
+        val row = HoldingsOcr.parse(raw).single()
+        assertEquals("国泰纳斯达克100指数(QDII)", row.name)
+        assertEquals("160213", row.code)
+        assertEquals(d("365.69"), row.shares)
+        assertEquals(d("4.4847"), row.cost)
+        assertEquals(d("1371.34"), row.amount)
+        assertEquals("2026-11-20", row.confirmedDate)
+        assertTrue(row.issues.isEmpty())
+    }
 }

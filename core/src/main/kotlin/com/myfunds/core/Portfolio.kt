@@ -8,7 +8,8 @@ import java.util.UUID
 
 data class Holding(val id: String, val code: String, val name: String, val groupId: String = "default",
     val shares: BigDecimal = BigDecimal.ZERO, val cost: BigDecimal = BigDecimal.ZERO,
-    val order: Int = 0, val starred: Boolean = false, val confirmedDate: String? = null, val initialShares: BigDecimal? = null)
+    val order: Int = 0, val starred: Boolean = false, val confirmedDate: String? = null, val initialShares: BigDecimal? = null,
+    val dcaShares: BigDecimal? = null, val dcaAmount: BigDecimal? = null, val dcaLastDate: String? = null, val dcaWeekdaysOnly: Boolean = true)
 data class Group(val id: String, val name: String)
 data class Trade(val id: String, val holdingId: String, val kind: String, val shares: BigDecimal,
     val price: BigDecimal, val fee: BigDecimal, val date: String, val realized: BigDecimal = BigDecimal.ZERO)
@@ -31,13 +32,16 @@ data class Portfolio(val holdings: List<Holding> = emptyList(),
             validDecimal(it.shares); validDecimal(it.cost)
             require((it.confirmedDate == null) == (it.initialShares == null)) { "初始份额与确认日期必须同时存在" }
             it.initialShares?.let { n -> validDecimal(n) }
+            it.dcaShares?.let { n -> validDecimal(n) }
+            it.dcaAmount?.let { n -> validDecimal(n) }
+            it.dcaLastDate?.let { date -> require(runCatching { LocalDate.parse(date) }.isSuccess) { "定投日期无效" } }
             it.confirmedDate?.let { date -> require(runCatching { LocalDate.parse(date) }.isSuccess && date <= LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()) { "初始日期无效或尚未发生" } }
         }
         require(holdings.map { it.code }.toSet().size == holdings.size) { "基金代码重复" }
         val latest = holdings.mapNotNull { h -> h.confirmedDate?.let { h.id to it } }.toMap().toMutableMap()
         trades.forEach {
             require(it.holdingId in holdingIds) { "交易引用了不存在的基金" }
-            require(it.kind in listOf("BUY", "SELL", "CALIBRATE")) { "未知的记录类型" }
+            require(it.kind in listOf("BUY", "SELL", "CALIBRATE", "DCA")) { "未知的记录类型" }
             validDecimal(it.shares); validDecimal(it.price); validDecimal(it.fee); validDecimal(it.realized, true)
             require(it.kind == "CALIBRATE" || (it.shares > BigDecimal.ZERO && it.price > BigDecimal.ZERO)) { "交易份额和净值必须大于零" }
             require(it.kind != "SELL" || it.fee <= it.shares * it.price) { "手续费超过卖出金额" }
@@ -77,13 +81,58 @@ object PortfolioOperations {
         require(kind != "SELL" || qty <= old.shares) { "卖出份额超过持有份额" }
         require(kind != "SELL" || fee <= qty * price) { "手续费超过卖出金额" }
         val next = when (kind) {
-            "BUY" -> old.copy(shares = old.shares + qty, cost = (old.shares * old.cost + qty * price + fee).divide(old.shares + qty, 16, RoundingMode.HALF_UP))
+            "BUY", "DCA" -> old.copy(shares = old.shares + qty, cost = (old.shares * old.cost + qty * price + fee).divide(old.shares + qty, 16, RoundingMode.HALF_UP))
             "SELL" -> old.copy(shares = old.shares - qty)
             else -> old.copy(shares = qty, cost = price)
         }
         val realized = if (kind == "SELL") (qty * (price - old.cost) - fee).setScale(2, RoundingMode.HALF_UP) else BigDecimal.ZERO
         return p.copy(holdings = p.holdings.map { if (it.id == id) next else it },
             trades = p.trades + Trade(UUID.randomUUID().toString(), id, kind, qty, price, fee, date, realized)).validate()
+    }
+
+    fun applyDcaCatchUp(p: Portfolio, today: String, quotes: Map<String, FundQuote> = emptyMap()): Portfolio {
+        val todayDate = runCatching { LocalDate.parse(today) }.getOrNull() ?: return p
+        var currentPortfolio = p
+        for (holding in p.holdings) {
+            val hasDcaShares = holding.dcaShares != null && holding.dcaShares > BigDecimal.ZERO
+            val hasDcaAmount = holding.dcaAmount != null && holding.dcaAmount > BigDecimal.ZERO
+            if (!hasDcaShares && !hasDcaAmount) continue
+
+            val startDate = holding.dcaLastDate ?: holding.confirmedDate ?: today
+            var d = runCatching { LocalDate.parse(startDate) }.getOrNull() ?: todayDate
+            if (holding.dcaLastDate == null && d == todayDate) {
+                d = d.minusDays(1)
+            }
+            var nextDate = d.plusDays(1)
+            var updatedHolding = currentPortfolio.holdings.first { it.id == holding.id }
+            var executedAny = false
+
+            while (!nextDate.isAfter(todayDate)) {
+                val isWeekend = nextDate.dayOfWeek == java.time.DayOfWeek.SATURDAY || nextDate.dayOfWeek == java.time.DayOfWeek.SUNDAY
+                val shouldExecute = !holding.dcaWeekdaysOnly || !isWeekend
+                if (shouldExecute) {
+                    val q = quotes[holding.code]
+                    val unitPrice = q?.nav?.takeIf { it > BigDecimal.ZERO } ?: updatedHolding.cost.takeIf { it > BigDecimal.ZERO } ?: BigDecimal.ONE
+                    val addedShares = if (hasDcaShares) {
+                        holding.dcaShares!!
+                    } else {
+                        holding.dcaAmount!!.divide(unitPrice, 4, RoundingMode.HALF_UP)
+                    }
+                    if (addedShares > BigDecimal.ZERO) {
+                        currentPortfolio = trade(currentPortfolio, holding.id, addedShares, unitPrice, BigDecimal.ZERO, nextDate.toString(), "DCA")
+                        updatedHolding = currentPortfolio.holdings.first { it.id == holding.id }
+                        executedAny = true
+                    }
+                }
+                nextDate = nextDate.plusDays(1)
+            }
+            if (executedAny || holding.dcaLastDate != today) {
+                currentPortfolio = currentPortfolio.copy(holdings = currentPortfolio.holdings.map {
+                    if (it.id == holding.id) it.copy(dcaLastDate = today) else it
+                })
+            }
+        }
+        return currentPortfolio
     }
 }
 

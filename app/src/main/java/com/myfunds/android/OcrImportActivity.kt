@@ -26,7 +26,7 @@ class OcrImportActivity : Activity() {
     private lateinit var cards: LinearLayout
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
-    private lateinit var defaultDate: EditText
+    private var defaultChosenDate: String = ""
     private lateinit var dateControls: LinearLayout
     private lateinit var cancelButton: Button
     private val handler = Handler(Looper.getMainLooper())
@@ -42,7 +42,7 @@ class OcrImportActivity : Activity() {
     private val matching = LatestRequest()
     private val searches = mutableListOf<Future<*>>()
     private data class Row(val selected: CheckBox, val name: EditText, val code: EditText, val shares: EditText,
-        val cost: EditText, val date: EditText, val mode: Spinner, val reference: String)
+        val cost: EditText, var selectedDate: String, val dateBtn: Button, val mode: Spinner, val reference: String)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,15 +65,15 @@ class OcrImportActivity : Activity() {
         root.addView(status)
         cancelButton = ui.button("取消识别") { cancelRecognition(); status.text = "已取消，持仓未修改" }.apply { visibility = View.GONE }
         root.addView(cancelButton)
-        defaultDate = field("YYYY-MM-DD", "").apply { filters = arrayOf(InputFilter.LengthFilter(10)) }
+        defaultChosenDate = todayStr()
         dateControls = ui.box().apply {
             visibility = View.GONE
-            addView(ui.text("本次持仓确认日期 · 仅填入空白项", 12f, ui.muted))
+            addView(ui.text("结算日期选项 · 点击一键应用至全部条目", 12f, ui.muted))
             addView(ui.box(false).apply {
                 gravity = android.view.Gravity.CENTER_VERTICAL
-                addView(defaultDate, LinearLayout.LayoutParams(0, -2, 1f))
-                addView(ui.button("今天") { defaultDate.setText(LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()); fillDates() })
-                addView(ui.button("应用") { fillDates() })
+                addView(ui.button("今天已结算 (${todayStr().substring(5)})") { applyGlobalDate(todayStr()) }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(ui.button("今天未结算 (${prevTradingDayStr().substring(5)})") { applyGlobalDate(prevTradingDayStr()) }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(ui.button("日历选择 ▾") { pickGlobalCalendarDate() })
             })
         }
         root.addView(dateControls)
@@ -85,14 +85,14 @@ class OcrImportActivity : Activity() {
         root.requestApplyInsets()
         savedInstanceState?.getString("ocrReviewDraft")?.let { raw ->
             try {
-                val draft = OcrDraftCodec.decode(raw); rawText = draft.text; defaultDate.setText(draft.defaultDate)
+                val draft = OcrDraftCodec.decode(raw); rawText = draft.text; defaultChosenDate = draft.defaultDate.ifBlank { todayStr() }
                 renderDrafts(draft.rows); status.text = "已恢复未提交的核对内容，持仓尚未修改。"
             } catch (e: Exception) { status.text = e.message ?: "核对草稿无法恢复，原持仓未修改" }
         }
     }
     override fun onSaveInstanceState(outState: Bundle) {
-        if (::cards.isInitialized) runCatching { OcrDraftCodec.encode(OcrReviewDraft(rawText, defaultDate.text.toString(), rows.map { r ->
-            OcrDraftRow(r.name.text.toString(), r.code.text.toString(), r.shares.text.toString(), r.cost.text.toString(), r.date.text.toString(), r.mode.selectedItemPosition, r.selected.isChecked, r.reference)
+        if (::cards.isInitialized) runCatching { OcrDraftCodec.encode(OcrReviewDraft(rawText, defaultChosenDate, rows.map { r ->
+            OcrDraftRow(r.name.text.toString(), r.code.text.toString(), r.shares.text.toString(), r.cost.text.toString(), r.selectedDate, r.mode.selectedItemPosition, r.selected.isChecked, r.reference)
         })) }.getOrNull()?.let { outState.putString("ocrReviewDraft", it) }
         super.onSaveInstanceState(outState)
     }
@@ -102,8 +102,28 @@ class OcrImportActivity : Activity() {
     override fun onDestroy() { cancellation.set(true); worker?.cancel(true); executor.shutdownNow(); handler.removeCallbacksAndMessages(null); client.cancelAll(); super.onDestroy() }
     private fun toast(value: String) = Toast.makeText(this, value.take(250), Toast.LENGTH_LONG).show()
     private fun selectImage() {
-        try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }, 200) }
-        catch (_: Exception) { toast("没有可用的图片选择器") }
+        val pickIntent = Intent(Intent.ACTION_PICK, android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+            type = "image/*"
+        }
+        try {
+            startActivityForResult(pickIntent, 200)
+        } catch (_: Exception) {
+            try {
+                startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/*"
+                }, 200)
+            } catch (_: Exception) {
+                try {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }, 200)
+                } catch (_: Exception) {
+                    toast("没有可用的相册或图片选择器")
+                }
+            }
+        }
     }
     @Deprecated("Compatible platform result API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -115,8 +135,68 @@ class OcrImportActivity : Activity() {
         if (::progress.isInitialized) progress.visibility = View.GONE
         if (::cancelButton.isInitialized) cancelButton.visibility = View.GONE
     }
+    private fun todayStr(): String = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()
+    private fun prevTradingDayStr(): String {
+        val today = LocalDate.now(ZoneId.of("Asia/Shanghai"))
+        return when (today.dayOfWeek) {
+            java.time.DayOfWeek.MONDAY -> today.minusDays(3)
+            java.time.DayOfWeek.SUNDAY -> today.minusDays(2)
+            java.time.DayOfWeek.SATURDAY -> today.minusDays(1)
+            else -> today.minusDays(1)
+        }.toString()
+    }
+    private fun formatDisplayDate(date: String): String {
+        val today = todayStr(); val prev = prevTradingDayStr()
+        return when (date) {
+            today -> "今天已结算 ($date)"
+            prev -> "今天未结算 ($date)"
+            else -> if (date.isNotBlank()) "结算日期: $date" else "选择结算日期 ▾"
+        }
+    }
+    private fun applyGlobalDate(date: String) {
+        defaultChosenDate = date
+        rows.forEach { it.selectedDate = date; it.dateBtn.text = formatDisplayDate(date) }
+        toast("已应用结算日期: $date")
+    }
+    private fun pickGlobalCalendarDate() {
+        val now = LocalDate.now(ZoneId.of("Asia/Shanghai"))
+        val dialog = android.app.DatePickerDialog(this, { _, year, month, dayOfMonth ->
+            val picked = LocalDate.of(year, month + 1, dayOfMonth)
+            if (picked.isAfter(now)) { toast("结算日期不能晚于今天"); return@DatePickerDialog }
+            applyGlobalDate(picked.toString())
+        }, now.year, now.monthValue - 1, now.dayOfMonth)
+        dialog.datePicker.maxDate = System.currentTimeMillis()
+        dialog.show()
+    }
+    private fun showRowDateDialog(row: Row) {
+        val today = todayStr(); val prev = prevTradingDayStr()
+        val options = mutableListOf("今天已结算 ($today)", "今天未结算 ($prev)")
+        if (row.selectedDate.isNotBlank() && row.selectedDate !in listOf(today, prev)) {
+            options.add("当前选择 (${row.selectedDate})")
+        }
+        options.add("从日历选择其他日期…")
+        AlertDialog.Builder(this).setTitle("选择结算日期").setItems(options.toTypedArray()) { _, i ->
+            when (i) {
+                0 -> { row.selectedDate = today; row.dateBtn.text = formatDisplayDate(today) }
+                1 -> { row.selectedDate = prev; row.dateBtn.text = formatDisplayDate(prev) }
+                else -> {
+                    if (options[i].startsWith("从日历选择")) {
+                        val initial = runCatching { LocalDate.parse(row.selectedDate) }.getOrNull() ?: LocalDate.now(ZoneId.of("Asia/Shanghai"))
+                        val dialog = android.app.DatePickerDialog(this, { _, year, month, dayOfMonth ->
+                            val picked = LocalDate.of(year, month + 1, dayOfMonth)
+                            if (picked.isAfter(LocalDate.now(ZoneId.of("Asia/Shanghai")))) { toast("结算日期不能晚于今天"); return@DatePickerDialog }
+                            row.selectedDate = picked.toString()
+                            row.dateBtn.text = formatDisplayDate(row.selectedDate)
+                        }, initial.year, initial.monthValue - 1, initial.dayOfMonth)
+                        dialog.datePicker.maxDate = System.currentTimeMillis()
+                        dialog.show()
+                    }
+                }
+            }
+        }.setNegativeButton("取消", null).show()
+    }
     private fun recognize(uri: Uri) {
-        cancelRecognition(); rawText = ""; rows.clear(); cards.removeAllViews(); defaultDate.setText(""); dateControls.visibility = View.GONE
+        cancelRecognition(); rawText = ""; rows.clear(); cards.removeAllViews(); dateControls.visibility = View.GONE
         cancellation = AtomicBoolean(false); val cancelled = cancellation; val ticket = generation
         progress.visibility = View.VISIBLE; cancelButton.visibility = View.VISIBLE; status.text = "正在读取图片，识别过程不联网…"
         worker = executor.submit {
@@ -142,14 +222,14 @@ class OcrImportActivity : Activity() {
                 if (candidate.issues.isNotEmpty()) add(candidate.issues.joinToString(" · "))
             }.joinToString("\n").take(500)
             OcrDraftRow(candidate.name, candidate.code.orEmpty(), candidate.shares?.toPlainString().orEmpty(), candidate.cost?.toPlainString().orEmpty(),
-                candidate.confirmedDate ?: defaultDate.text.toString(), if (candidate.shares != null && candidate.cost != null) 1 else 0, false, reference)
+                candidate.confirmedDate ?: defaultChosenDate.ifBlank { todayStr() }, if (candidate.shares != null && candidate.cost != null) 1 else 0, false, reference)
         }
         renderDrafts(drafts)
     }
     private fun renderDrafts(drafts: List<OcrDraftRow>) {
         rows.clear(); cards.removeAllViews()
         dateControls.visibility = if (drafts.isEmpty()) View.GONE else View.VISIBLE
-        status.text = if (drafts.isEmpty()) "尚未找到基金。可裁剪到基金区域重试，或修正识别文字后重新解析。" else "${drafts.size} 条候选。请核对基金类别、数值和截图确认日期，再勾选导入。日期不明确时不会默认按今天记账。"
+        status.text = if (drafts.isEmpty()) "尚未找到基金。可裁剪到基金区域重试，或修正识别文字后重新解析。" else "${drafts.size} 条候选。请核对基金类别、数值和结算日期，再勾选导入。"
         drafts.forEachIndexed { index, draft ->
             val panel = ui.panel()
             val selected = CheckBox(this).apply { text = "导入第 ${index + 1} 条"; setTextColor(ui.ink); buttonTintList = ColorStateList.valueOf(ui.accent); minHeight = ui.dp(48); isChecked = draft.selected }
@@ -157,13 +237,16 @@ class OcrImportActivity : Activity() {
             val code = field("六位基金代码", draft.code).apply { inputType = InputType.TYPE_CLASS_NUMBER; filters = arrayOf(InputFilter.LengthFilter(6)) }
             val shares = field("已确认份额", draft.shares, true)
             val cost = field("平均单位成本", draft.cost, true)
-            val date = field("这份持仓的确认日期 YYYY-MM-DD", draft.date).apply { filters = arrayOf(InputFilter.LengthFilter(10)) }
+            val initialDate = draft.date.ifBlank { defaultChosenDate.ifBlank { todayStr() } }
             val mode = Spinner(this).apply {
                 adapter = ArrayAdapter(this@OcrImportActivity, android.R.layout.simple_spinner_dropdown_item, listOf("只加自选（不录份额）", "录入新持仓", "更新已有持仓（校准）"))
                 setSelection(draft.mode)
                 ui.round(this, ui.soft, 16); setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
             }
-            val row = Row(selected, name, code, shares, cost, date, mode, draft.reference); rows.add(row)
+            lateinit var rowRef: Row
+            val dateBtn = ui.button(formatDisplayDate(initialDate)) { showRowDateDialog(rowRef) }
+            val row = Row(selected, name, code, shares, cost, initialDate, dateBtn, mode, draft.reference)
+            rowRef = row; rows.add(row)
             panel.addView(selected)
             if (draft.reference.isNotBlank()) panel.addView(ui.text(draft.reference, 12f, ui.muted))
             panel.addView(ui.text("基金名称", 12f, ui.muted)); panel.addView(name)
@@ -172,14 +255,9 @@ class OcrImportActivity : Activity() {
             panel.addView(ui.text("导入方式", 12f, ui.muted)); panel.addView(mode, LinearLayout.LayoutParams(-1, ui.dp(48)))
             panel.addView(ui.text("份额", 12f, ui.muted)); panel.addView(shares)
             panel.addView(ui.text("平均单位成本", 12f, ui.muted)); panel.addView(cost)
-            panel.addView(ui.text("确认日期", 12f, ui.muted)); panel.addView(date)
+            panel.addView(ui.text("持仓结算日期（点击切换已结算/未结算）", 12f, ui.muted)); panel.addView(dateBtn)
             cards.addView(panel)
         }
-    }
-    private fun fillDates() {
-        val date = defaultDate.text.toString().trim()
-        try { LocalDate.parse(date); require(date <= LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()); rows.filter { it.date.text.isBlank() }.forEach { it.date.setText(date) } }
-        catch (_: Exception) { toast("请填写有效且不晚于今天的 YYYY-MM-DD 日期") }
     }
     private fun editText() {
         val input = EditText(this).apply {
@@ -221,7 +299,7 @@ class OcrImportActivity : Activity() {
             val selected = rows.filter { it.selected.isChecked }.map { row ->
                 val mode = ImportMode.values()[row.mode.selectedItemPosition]
                 ReviewedHolding(row.code.text.toString().trim(), row.name.text.toString().trim(),
-                    if (mode == ImportMode.WATCH) null else decimal(row.shares), if (mode == ImportMode.WATCH) null else decimal(row.cost), row.date.text.toString().trim(), mode)
+                    if (mode == ImportMode.WATCH) null else decimal(row.shares), if (mode == ImportMode.WATCH) null else decimal(row.cost), row.selectedDate.trim(), mode)
             }
             require(selected.isNotEmpty()) { "请先勾选已经核对的条目" }
             LocalStore(this).use { ReviewedImport.apply(it.load(), selected, "default") }

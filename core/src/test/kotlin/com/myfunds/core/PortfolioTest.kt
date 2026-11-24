@@ -68,4 +68,24 @@ class PortfolioTest {
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.encode(p.copy(trades = listOf(p.trades.single().copy(holdingId = "missing")))) }
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.decode("x".repeat(BackupCodec.MAX_BYTES + 1)) }
     }
+
+    @Test fun dcaCatchUpAccumulatesSharesAndRecalculatesAverageCost() {
+        val baseHolding = Holding("h1", "000001", "华夏成长", "default", d("100"), d("1.00"), confirmedDate = "2026-11-20",
+            initialShares = d("100"), dcaShares = d("50"), dcaLastDate = "2026-11-20", dcaWeekdaysOnly = true)
+        val p = Portfolio(holdings = listOf(baseHolding))
+        // 2026-11-20 is Friday. Intermediate dates: 21 (Sat, skip), 22 (Sun, skip), 23 (Mon, execute), 24 (Tue, execute).
+        val quotes = mapOf("000001" to FundQuote("000001", "华夏成长", d("2.00"), "2026-11-24"))
+        val updated = PortfolioOperations.applyDcaCatchUp(p, "2026-11-24", quotes)
+        // Two trades should be executed:
+        assertEquals(2, updated.trades.size)
+        assertTrue(updated.trades.all { it.kind == "DCA" })
+        // Shares: 100 + 50 + 50 = 200
+        assertEquals(d("200"), updated.holdings.single().shares)
+        // dcaLastDate updated to today:
+        assertEquals("2026-11-24", updated.holdings.single().dcaLastDate)
+        // Check backup encoding/decoding preserves DCA configuration
+        val encoded = BackupCodec.encode(updated)
+        val decoded = BackupCodec.decode(encoded)
+        assertEquals(updated, decoded)
+    }
 }

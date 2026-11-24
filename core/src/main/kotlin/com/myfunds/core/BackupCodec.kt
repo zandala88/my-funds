@@ -16,7 +16,11 @@ object BackupCodec {
         root.put("holdings", JSONArray().also { a -> p.holdings.forEach { h -> a.put(JSONObject()
             .put("id", h.id).put("code", h.code).put("name", h.name).put("groupId", h.groupId)
             .put("shares", h.shares.toPlainString()).put("cost", h.cost.toPlainString()).put("order", h.order).put("starred", h.starred)
-            .put("confirmedDate", h.confirmedDate ?: JSONObject.NULL).put("initialShares", h.initialShares?.toPlainString() ?: JSONObject.NULL)) } })
+            .put("confirmedDate", h.confirmedDate ?: JSONObject.NULL).put("initialShares", h.initialShares?.toPlainString() ?: JSONObject.NULL)
+            .put("dcaShares", h.dcaShares?.toPlainString() ?: JSONObject.NULL)
+            .put("dcaAmount", h.dcaAmount?.toPlainString() ?: JSONObject.NULL)
+            .put("dcaLastDate", h.dcaLastDate ?: JSONObject.NULL)
+            .put("dcaWeekdaysOnly", h.dcaWeekdaysOnly)) } })
         root.put("groups", JSONArray().also { a -> p.groups.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name)) } })
         root.put("trades", JSONArray().also { a -> p.trades.forEach { t -> a.put(JSONObject().put("id", t.id).put("holdingId", t.holdingId)
             .put("kind", t.kind).put("shares", t.shares.toPlainString()).put("price", t.price.toPlainString())
@@ -59,7 +63,11 @@ object BackupCodec {
         val holdings = rows("holdings", 10000) { o -> Holding(text(o, "id"), text(o, "code"), text(o, "name"), text(o, "groupId"),
             decimal(o, "shares"), decimal(o, "cost"), integer(o, "order"), bool(o, "starred"),
             if (!o.has("confirmedDate") || o.isNull("confirmedDate")) null else text(o, "confirmedDate"),
-            if (!o.has("initialShares") || o.isNull("initialShares")) null else decimal(o, "initialShares")) }
+            if (!o.has("initialShares") || o.isNull("initialShares")) null else decimal(o, "initialShares"),
+            if (!o.has("dcaShares") || o.isNull("dcaShares")) null else decimal(o, "dcaShares"),
+            if (!o.has("dcaAmount") || o.isNull("dcaAmount")) null else decimal(o, "dcaAmount"),
+            if (!o.has("dcaLastDate") || o.isNull("dcaLastDate")) null else text(o, "dcaLastDate"),
+            if (!o.has("dcaWeekdaysOnly") || o.isNull("dcaWeekdaysOnly")) true else bool(o, "dcaWeekdaysOnly")) }
         val groups = rows("groups", 1000) { Group(text(it, "id"), text(it, "name")) }
         val trades = rows("trades", 100000) { o -> Trade(text(o, "id"), text(o, "holdingId"), text(o, "kind"),
             decimal(o, "shares"), decimal(o, "price"), decimal(o, "fee"), text(o, "date"), decimal(o, "realized")) }

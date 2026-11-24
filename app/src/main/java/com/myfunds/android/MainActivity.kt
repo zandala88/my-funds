@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private var importing = false
     private var initialRequestDone = false
     private var holdingPage = 0
+    private var scrollY = 0
     private var pendingScreenshotRows: String? = null
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newFixedThreadPool(2)
@@ -51,6 +52,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        tab = savedInstanceState?.getInt("selectedTab") ?: 0
+        scrollY = savedInstanceState?.getInt("scrollY") ?: 0
         pendingScreenshotRows = savedInstanceState?.getString("pendingScreenshotRows")
         store = LocalStore(this)
         try { portfolio = store.load(); quotes = store.loadQuotes() }
@@ -70,12 +73,20 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart(); active = true
         if (!::ui.isInitialized) return
+        checkAndApplyDca()
         if (!initialRequestDone) { initialRequestDone = true; if (portfolio.holdings.isNotEmpty()) refreshFunds() }
         restartTimer()
     }
-    override fun onSaveInstanceState(outState: Bundle) { pendingScreenshotRows?.let { outState.putString("pendingScreenshotRows", it) }; group?.let { outState.putString("selectedGroup", it) }; super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingScreenshotRows?.let { outState.putString("pendingScreenshotRows", it) }
+        group?.let { outState.putString("selectedGroup", it) }
+        outState.putInt("selectedTab", tab)
+        outState.putInt("scrollY", scrollY)
+        super.onSaveInstanceState(outState)
+    }
     override fun onResume() {
         super.onResume()
+        checkAndApplyDca()
         val raw = pendingScreenshotRows ?: return
         pendingScreenshotRows = null
         safe {
@@ -99,6 +110,14 @@ class MainActivity : Activity() {
     private fun restartTimer() { handler.removeCallbacks(refreshLoop); if (active && portfolio.settings.autoRefresh) handler.postDelayed(refreshLoop, 60000) }
     private fun toast(message: String) = Toast.makeText(this, message.take(200), Toast.LENGTH_LONG).show()
     private fun safe(action: () -> Unit) { try { action() } catch (e: Exception) { toast(e.message ?: "操作未完成，原数据已保留") } }
+    private fun checkAndApplyDca() {
+        val td = today()
+        val updated = PortfolioOperations.applyDcaCatchUp(portfolio, td, quotes)
+        if (updated != portfolio) {
+            store.save(updated)
+            portfolio = updated
+        }
+    }
     private fun commit(next: Portfolio) {
         check(!importing) { "正在恢复备份，请稍候" }
         store.save(next); portfolio = next; render()
@@ -130,76 +149,189 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = if (portfolio.settings.darkMode) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
         root.addView(ui.text(if (tab == 0) "个人基金簿" else "本机与备份", 12f, ui.muted))
         root.addView(ui.box(false).apply {
+            gravity = Gravity.CENTER_VERTICAL
             addView(ui.text(if (tab == 0) "我的自选" else "设置", 29f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
-            if (tab == 0) addView(ui.button(if (refreshing) "更新中" else "刷新") { refreshFunds() })
+            if (tab == 0) {
+                val refreshBtn = ui.iconButton(R.drawable.ic_refresh, "刷新") { refreshFunds() }
+                if (refreshing) {
+                    val anim = android.view.animation.RotateAnimation(0f, 360f, android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f, android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f).apply {
+                        duration = 800
+                        repeatCount = android.view.animation.Animation.INFINITE
+                        interpolator = android.view.animation.LinearInterpolator()
+                    }
+                    refreshBtn.startAnimation(anim)
+                }
+                addView(refreshBtn)
+            }
         })
         root.addView(ui.text(if (tab == 0) status else "数据存在本机，换机用文件恢复", 12f, ui.muted).apply { maxLines = 2 })
         body = ui.box().apply { setPadding(0, ui.dp(18), 0, ui.dp(10)) }
-        root.addView(ScrollView(this).apply { isFillViewport = true; addView(body) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        val scroller = ScrollView(this).apply { isFillViewport = true; addView(body) }
+        root.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
         if (tab == 0) holdingsPage() else settingsPage()
         root.addView(ui.box(false).apply {
             ui.round(this, ui.card, 34); setPadding(ui.dp(5), ui.dp(3), ui.dp(5), ui.dp(3))
             listOf("自选", "设置").forEachIndexed { i, label ->
-                addView(ui.button(label, primary = i == tab) { tab = i; render() }, LinearLayout.LayoutParams(0, ui.dp(56), 1f))
+                addView(ui.button(label, primary = i == tab) { tab = i; scrollY = 0; render() }, LinearLayout.LayoutParams(0, ui.dp(56), 1f))
             }
         })
         setContentView(root); root.requestApplyInsets()
+        val targetScrollY = scrollY
+        if (targetScrollY > 0) {
+            scroller.post { scroller.scrollTo(0, targetScrollY) }
+        }
+        scroller.viewTreeObserver.addOnScrollChangedListener {
+            scrollY = scroller.scrollY
+        }
     }
     private fun holdingsPage() {
         val selected = portfolio.holdings.filter { group == null || it.groupId == group }
         val filtered = portfolio.copy(holdings = selected, trades = portfolio.trades.filter { t -> selected.any { it.id == t.holdingId } })
         val summary = PortfolioMath.summary(filtered, quotes.mapNotNull { (code, q) -> q.nav?.let { code to it } }.toMap())
-        val daily = MarketMath.portfolioDailies(filtered, quotes, today())
-        val dayTotal = if (daily.any { it == null }) null else daily.filterNotNull().fold(BigDecimal.ZERO) { a, d -> a + d.amount }
-        body.addView(ui.panel().apply {
-            ui.round(this, Color.parseColor(if (ui.dark) "#294638" else "#E4EEE5"))
-            addView(ui.text("持仓总额（按已公布净值）", 12f, ui.muted))
-            addView(ui.text(ui.amount(summary.marketValue), 39f, bold = true))
-            addView(ui.box(false).apply {
-                ui.stat(this, "持有收益", ui.signed(summary.profit), ui.changeColor(summary.profit))
-                ui.stat(this, "已实现 · 建账以来", ui.signed(summary.realized), ui.changeColor(summary.realized))
-            })
-            if (summary.missing > 0) addView(ui.text("${summary.missing} 只持仓暂无净值，汇总暂不完整", 11f, ui.muted))
-            addView(ui.text("收益合计  ${ui.signed(summary.totalProfit)}", 12f, ui.changeColor(summary.totalProfit)))
-            addView(ui.text("当日收益${if (daily.any { it?.estimated == true }) "（含估算）" else "（按公布涨幅）"}  ${ui.signed(dayTotal)}", 12f, ui.changeColor(dayTotal)))
-        })
+        val dcaActiveCount = portfolio.holdings.count { (it.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (it.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO }
+
+        // Bento Row 1: Top Asymmetric 2-Card Row
         body.addView(ui.box(false).apply {
-            addView(ui.button("＋ 添加基金", primary = true) { searchDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("截图导入") { startActivityForResult(Intent(this@MainActivity, OcrImportActivity::class.java), 102) }, LinearLayout.LayoutParams(0, -2, 1f))
+            // Left Card: Total Asset & Profit Overview
+            val leftCard = ui.bentoCard().apply {
+                addView(ui.text("持仓总额（按公布净值）", 11f, ui.muted))
+                addView(ui.text(ui.amount(summary.marketValue), 28f, ui.ink, bold = true))
+                val profitRow = ui.box(false).apply {
+                    addView(ui.text("持有收益 ", 11f, ui.muted))
+                    addView(ui.text(ui.signed(summary.profit), 12f, ui.changeColor(summary.profit), bold = true))
+                    addView(ui.text("  ·  已实现 ", 11f, ui.muted))
+                    addView(ui.text(ui.signed(summary.realized), 12f, ui.changeColor(summary.realized), bold = true))
+                }
+                addView(profitRow)
+                if (summary.missing > 0) {
+                    addView(ui.text("${summary.missing} 只暂无净值，显示以成本为准", 10f, ui.muted))
+                }
+            }
+            addView(leftCard, LinearLayout.LayoutParams(0, -2, 1.6f).apply { marginEnd = ui.dp(8) })
+
+            // Right Card: DCA Automatic Status
+            val rightCard = ui.bentoCard().apply {
+                addView(ui.text("自动定投", 11f, ui.muted))
+                addView(ui.text("$dcaActiveCount 只", 22f, ui.accent, bold = true))
+                addView(ui.badge(if (dcaActiveCount > 0) "工作日累计中" else "未开启定投", if (dcaActiveCount > 0) ui.accent else ui.muted))
+            }
+            addView(rightCard, LinearLayout.LayoutParams(0, -1, 1f))
         })
-        val groupName = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
+
+        // Bento Row 2: Status & Sync Pill Banner
+        body.addView(ui.box().apply {
+            setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8))
+            ui.round(this, ui.soft, 12, ui.border, 1)
+            val syncText = if (dcaActiveCount > 0) "● 定投计划已同步至今日 (${today()}) · 本地自动记账" else "● 数据安全保存在本地 · 点击基金查看导入记录"
+            addView(ui.text(syncText, 11f, ui.muted))
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8); bottomMargin = ui.dp(10) }
+        })
+
+        // Bento Row 3: Action Buttons
         body.addView(ui.box(false).apply {
-            addView(ui.button("$groupName · ${selected.size} ▾") { chooseGroup() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("排序 ▾") { sortDialog() })
+            addView(ui.button("＋ 添加自选", primary = true) { searchDialog() }, LinearLayout.LayoutParams(0, -2, 1.2f).apply { marginEnd = ui.dp(6) })
+            addView(ui.button("截图导入") { startActivityForResult(Intent(this@MainActivity, OcrImportActivity::class.java), 102) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
+            val groupName = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
+            addView(ui.button("$groupName ▾") { chooseGroup() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
+            addView(ui.button("排序 ▾") { sortDialog() }, LinearLayout.LayoutParams(0, -2, 0.9f))
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) }
         })
+
         val sorted = PortfolioMath.sorted(portfolio.copy(holdings = selected), quotes, today())
         holdingPage = holdingPage.coerceIn(0, ((sorted.size - 1).coerceAtLeast(0) / 50))
-        if (sorted.isEmpty()) body.addView(ui.centered("添加你关注的基金\n份额和成本可以稍后填写"))
+        if (sorted.isEmpty()) body.addView(ui.centered("添加或截图导入你关注的基金\n随时随地掌握个人持仓与定投"))
+
         sorted.drop(holdingPage * 50).take(50).forEach { h ->
-            val q = quotes[h.code]; val profit = q?.nav?.let { (it - h.cost) * h.shares }
-            body.addView(ui.panel().apply {
-                addView(ui.text((if (h.starred) "★ " else "") + h.name, 16f, bold = true))
-                addView(ui.text("${h.code}  ·  ${q?.date ?: "暂无净值日期"}", 11f, ui.muted))
-                addView(ui.box(false).apply {
-                    ui.stat(this, "单位净值", ui.amount(q?.nav, 4))
-                    ui.stat(this, "持有收益", if (h.shares.signum() == 0) "未录入" else ui.signed(profit), ui.changeColor(profit))
-                    ui.stat(this, "盘中估算涨幅", ui.signed(currentEstimate(q)?.estimateChange, "%"), ui.changeColor(currentEstimate(q)?.estimateChange))
-                })
-                val metadata = PortfolioMath.metadata(h, portfolio.settings).joinToString("  ·  ") { (label, value) -> "$label ${value.stripTrailingZeros().toPlainString()}" }
-                if (metadata.isNotEmpty()) addView(ui.text(metadata, 11f, ui.muted))
-                val rate = PortfolioMath.holdingRate(h, q?.nav)
-                addView(ui.text("持有收益率 ${ui.signed(rate, "%")}", 11f, ui.changeColor(rate)))
-                currentEstimate(q)?.estimateTime?.let { addView(ui.text("估算时间 $it", 10f, ui.muted)) }
-                setOnClickListener { fundDetail(h) }; setOnLongClickListener { holdingActions(h); true }
-                contentDescription = "${h.name}，${h.code}。点击看详情，长按管理持仓"
+            val q = quotes[h.code]
+            val profit = q?.nav?.let { (it - h.cost) * h.shares }
+            val rate = PortfolioMath.holdingRate(h, q?.nav)
+            val holdingValue = q?.nav?.let { it * h.shares } ?: (h.cost * h.shares)
+            val hasDca = (h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO
+
+            body.addView(ui.bentoCard(radius = 18).apply {
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) }
+
+                // Top row: Name + Code Badge & Date
+                val topRow = ui.box(false).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    val nameBox = ui.box(false).apply {
+                        gravity = Gravity.CENTER_VERTICAL
+                        if (h.starred) addView(ui.text("★ ", 14f, Color.parseColor("#F59E0B"), bold = true))
+                        addView(ui.text(h.name, 15f, ui.ink, bold = true).apply {
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        }, LinearLayout.LayoutParams(0, -2, 1f))
+                        addView(ui.badge(h.code, ui.accent).apply {
+                            setPadding(ui.dp(6), ui.dp(1), ui.dp(6), ui.dp(1))
+                        })
+                    }
+                    addView(nameBox, LinearLayout.LayoutParams(0, -2, 1f))
+                    val dateStr = q?.date ?: (h.confirmedDate ?: "暂无日期")
+                    addView(ui.text(dateStr, 11f, ui.muted))
+                }
+                addView(topRow)
+
+                // Middle: 3-column Bento Metric Block
+                val metricBlock = ui.box(false).apply {
+                    setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+                    ui.round(this, ui.soft, 12, ui.border, 1)
+                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8); bottomMargin = ui.dp(8) }
+
+                    // Col 1: 持有份额
+                    addView(ui.box().apply {
+                        addView(ui.text("持有份额", 10f, ui.muted))
+                        addView(ui.text(if (h.shares.signum() == 0) "0.00" else h.shares.stripTrailingZeros().toPlainString(), 13f, ui.ink, bold = true))
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+
+                    // Col 2: 成本净值
+                    addView(ui.box().apply {
+                        addView(ui.text("成本净值", 10f, ui.muted))
+                        addView(ui.text(if (h.cost.signum() == 0) "0.0000" else ui.amount(h.cost, 4), 13f, ui.ink, bold = true))
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+
+                    // Col 3: 持仓总额
+                    addView(ui.box().apply {
+                        addView(ui.text("持仓总额", 10f, ui.muted))
+                        addView(ui.text(ui.amount(holdingValue), 13f, ui.ink, bold = true))
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                }
+                addView(metricBlock)
+
+                // Bottom row: DCA status badge on left, Profit & Rate on right
+                val bottomRow = ui.box(false).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    if (hasDca) {
+                        val dcaText = if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "定投: 每日 ${h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: ""} 元"
+                        addView(ui.badge(dcaText, ui.accent).apply {
+                            setOnClickListener { setupDcaDialog(h) }
+                        })
+                    } else {
+                        addView(ui.badge("＋ 设为定投", ui.muted, ui.soft).apply {
+                            setOnClickListener { setupDcaDialog(h) }
+                        })
+                    }
+                    val profitView = ui.box(false).apply {
+                        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                        val profitColor = ui.changeColor(profit)
+                        addView(ui.text("收益 ", 11f, ui.muted))
+                        addView(ui.text("${ui.signed(profit)} (${ui.signed(rate, "%")})", 12f, profitColor, bold = true))
+                    }
+                    addView(profitView, LinearLayout.LayoutParams(0, -2, 1f))
+                }
+                addView(bottomRow)
+
+                setOnClickListener { showHoldingLedger(h) }
+                setOnLongClickListener { holdingActions(h); true }
+                contentDescription = "${h.name}，${h.code}。点击查看本地导入账目，长按管理持仓"
             })
         }
+
         if (sorted.size > 50) body.addView(ui.box(false).apply {
             addView(ui.button("上一页") { holdingPage = (holdingPage - 1).coerceAtLeast(0); render() }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(ui.text("${holdingPage + 1} / ${(sorted.size + 49) / 50}", 13f, ui.muted))
             addView(ui.button("下一页") { holdingPage++; render() }, LinearLayout.LayoutParams(0, -2, 1f))
         })
-        body.addView(ui.text("长按基金管理持仓 · 估值为参考，实际收益以公布净值为准", 11f, ui.muted))
+        body.addView(ui.text("点击基金查看本地导入记账明细 · 长按管理持仓与定投", 11f, ui.muted))
     }
     private fun currentEstimate(q: FundQuote?): FundQuote? = MarketMath.usableEstimate(q, today())
     private fun refreshFunds() {
@@ -209,8 +341,9 @@ class MainActivity : Activity() {
         val codes = portfolio.holdings.map { it.code }
         network({ client.quotes(codes) }, { rows ->
             refreshing = false; store.saveQuotes(rows); quotes = store.loadQuotes()
+            checkAndApplyDca()
             val valid = rows.count { it.nav != null }
-            status = if (valid > 0) "已获取 $valid 只基金净值 · 以每只基金日期为准" else "暂无新净值，继续显示本机缓存"
+            status = if (valid > 0) "已获取 $valid 只基金净值 · 定投已自动同步" else "暂无新净值，继续显示本机缓存"
             if (tab == 0) render()
         }, { error -> refreshing = false; status = "$error · 显示本机缓存"; if (tab == 0) render() })
     }
@@ -270,22 +403,55 @@ class MainActivity : Activity() {
         dialog.show()
     }
     private fun decimal(field: EditText) = field.text.toString().trim().takeIf { it.matches(Regex("[0-9]+(\\.[0-9]+)?")) }?.toBigDecimalOrNull() ?: throw IllegalArgumentException("请输入有效的非负数值")
+    private fun today() = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()
+    private fun prevTradingDay(): String {
+        val t = LocalDate.now(ZoneId.of("Asia/Shanghai"))
+        return when (t.dayOfWeek) {
+            java.time.DayOfWeek.MONDAY -> t.minusDays(3)
+            java.time.DayOfWeek.SUNDAY -> t.minusDays(2)
+            java.time.DayOfWeek.SATURDAY -> t.minusDays(1)
+            else -> t.minusDays(1)
+        }.toString()
+    }
+    private fun datePickerField(hint: String, initialValue: String): EditText {
+        val field = ui.field(hint, initialValue)
+        field.isFocusable = false
+        field.isClickable = true
+        field.setOnClickListener {
+            val td = today(); val prev = prevTradingDay()
+            val options = arrayOf("今天已结算 ($td)", "今天未结算 ($prev)", "从日历选择其他日期…")
+            AlertDialog.Builder(this).setTitle("选择结算日期").setItems(options) { _, which ->
+                when (which) {
+                    0 -> field.setText(td)
+                    1 -> field.setText(prev)
+                    2 -> {
+                        val parsed = runCatching { LocalDate.parse(field.text.toString().trim()) }.getOrNull() ?: LocalDate.now(ZoneId.of("Asia/Shanghai"))
+                        val dlg = android.app.DatePickerDialog(this, { _, y, m, d ->
+                            field.setText(LocalDate.of(y, m + 1, d).toString())
+                        }, parsed.year, parsed.monthValue - 1, parsed.dayOfMonth)
+                        dlg.datePicker.maxDate = System.currentTimeMillis()
+                        dlg.show()
+                    }
+                }
+            }.show()
+        }
+        return field
+    }
     private fun editHolding(h: Holding) {
         val shares = ui.field("已确认持有份额", h.shares.toPlainString(), true); val cost = ui.field("平均单位成本", h.cost.toPlainString(), true)
         val initial = portfolio.trades.none { it.holdingId == h.id }
-        val baseline = ui.field("这份持仓的确认日期 YYYY-MM-DD", h.confirmedDate ?: today())
-        form("${h.name} · 持仓", if (initial) listOf(shares, cost, baseline) else listOf(shares, cost), "首次录入为起始快照，请填这份持仓已确认的日期；已有记录时修改会记为今天的持仓校准。") {
+        val baseline = datePickerField("结算日期（点击切换选项）", h.confirmedDate ?: today())
+        form("${h.name} · 持仓", if (initial) listOf(shares, cost, baseline) else listOf(shares, cost), "首次录入为起始快照，请选择结算日期；已有记录时修改会记为今天的持仓校准。") {
             val qty = decimal(shares); val price = decimal(cost)
             val next = if (portfolio.trades.any { it.holdingId == h.id }) PortfolioOperations.calibrate(portfolio, h.id, qty, price, today())
                 else portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(shares = qty, cost = price, confirmedDate = baseline.text.toString().trim(), initialShares = qty) else it })
             commit(next)
         }
     }
-    private fun today() = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()
     private fun transaction(h: Holding, kind: String) {
         val shares = ui.field(if (kind == "CALIBRATE") "校准后份额" else "已确认成交份额", numeric = true)
         val price = ui.field(if (kind == "CALIBRATE") "校准后平均成本" else "成交单位净值", numeric = true)
-        val fee = ui.field("手续费（元）", "0", true); val date = ui.field("确认日期 YYYY-MM-DD", today())
+        val fee = ui.field("手续费（元）", "0", true); val date = datePickerField("结算日期（点击切换选项）", today())
         form("${when (kind) { "BUY" -> "加仓"; "SELL" -> "减仓"; else -> "持仓校准" }} · ${h.name}", if (kind == "CALIBRATE") listOf(shares, price, date) else listOf(shares, price, fee, date), "只记录已确认的交易，不会发起实际买卖。") {
             val qty = decimal(shares); val value = decimal(price); val day = date.text.toString().trim()
             commit(when (kind) {
@@ -296,93 +462,187 @@ class MainActivity : Activity() {
         }
     }
     private fun holdingActions(h: Holding) {
-        val labels = arrayOf("编辑持仓", "记录加仓", "记录减仓", "持仓校准 / 分红折算", if (h.starred) "取消特别关注" else "特别关注", "移动到分组", "移到最前", "删除基金及其操作记录")
+        val labels = arrayOf("查看本地账目", "每日定投设置", "编辑持仓", "记录加仓", "记录减仓", "持仓校准 / 分红折算", if (h.starred) "取消特别关注" else "特别关注", "移动到分组", "移到最前", "删除基金及其操作记录")
         AlertDialog.Builder(this).setTitle(h.name).setItems(labels) { _, i -> safe {
             when (i) {
-                0 -> editHolding(h); 1 -> transaction(h, "BUY"); 2 -> transaction(h, "SELL"); 3 -> transaction(h, "CALIBRATE")
-                4 -> commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(starred = !it.starred) else it }))
-                5 -> AlertDialog.Builder(this).setTitle("移动到分组").setItems(portfolio.groups.map { it.name }.toTypedArray()) { _, g -> safe { commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(groupId = portfolio.groups[g].id) else it })) } }.show()
-                6 -> commit(portfolio.copy(holdings = (listOf(h) + portfolio.holdings.filter { it.id != h.id }).mapIndexed { n, item -> item.copy(order = n) }))
-                7 -> AlertDialog.Builder(this).setTitle("删除 ${h.name}？").setMessage("同时删除该基金的本机操作记录。建议先导出备份。")
+                0 -> showHoldingLedger(h)
+                1 -> setupDcaDialog(h)
+                2 -> editHolding(h)
+                3 -> transaction(h, "BUY")
+                4 -> transaction(h, "SELL")
+                5 -> transaction(h, "CALIBRATE")
+                6 -> commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(starred = !it.starred) else it }))
+                7 -> AlertDialog.Builder(this).setTitle("移动到分组").setItems(portfolio.groups.map { it.name }.toTypedArray()) { _, g -> safe { commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(groupId = portfolio.groups[g].id) else it })) } }.show()
+                8 -> commit(portfolio.copy(holdings = (listOf(h) + portfolio.holdings.filter { it.id != h.id }).mapIndexed { n, item -> item.copy(order = n) }))
+                9 -> AlertDialog.Builder(this).setTitle("删除 ${h.name}？").setMessage("同时删除该基金的本机操作记录。建议先导出备份。")
                     .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ -> safe { commit(portfolio.copy(holdings = portfolio.holdings.filter { it.id != h.id }, trades = portfolio.trades.filter { it.holdingId != h.id })) } }.show()
             }
         } }.show()
     }
-    private fun fundDetail(h: Holding) {
-        val container = ui.box().apply { setPadding(ui.dp(20), ui.dp(6), ui.dp(20), ui.dp(10)) }
+    private fun showHoldingLedger(h: Holding) {
         val q = quotes[h.code]
-        container.addView(ui.text("${h.code}  ·  净值日期 ${q?.date ?: "暂无"}", 12f, ui.muted))
-        container.addView(ui.text("单位净值 ${ui.amount(q?.nav, 4)}  ·  当日涨幅 ${ui.signed(q?.change, "%")}", 15f, bold = true))
-        val estimate = currentEstimate(q)
-        container.addView(ui.text(if (estimate == null) "暂无当日盘中估值" else "估算净值 ${ui.amount(estimate.estimate, 4)}  ·  ${estimate.estimateTime}", 12f, ui.muted))
-        val dailyProfit = MarketMath.portfolioDaily(portfolio, h, q, today())
-        if (dailyProfit?.estimated == true) container.addView(ui.text("当日估算收益 ${ui.signed(dailyProfit.amount)}（按期初份额，仅供参考）", 12f, ui.muted))
-        if (dailyProfit != null && !dailyProfit.estimated) container.addView(ui.text("当日收益 ${ui.signed(dailyProfit.amount)}（按公布涨幅计算）", 12f, ui.muted))
-        val display = ui.box()
-        val chartRequest = LatestRequest()
-        fun showChart(range: String, yield: Boolean = false, intraday: Boolean = false) {
-            val token = chartRequest.next()
-            val key = "chart:${h.code}:$range:$yield:$intraday"
-            val cached = runCatching { store.cache(key)?.let { decodePoints(it) } }.getOrNull()
-            display.removeAllViews(); display.addView(ui.text(if (cached.isNullOrEmpty()) "正在获取走势…" else "本机缓存，按图中日期查看", 11f, ui.muted))
-            if (!cached.isNullOrEmpty()) display.addView(LineChartView(this, cached, ui), LinearLayout.LayoutParams(-1, ui.dp(240)))
-            network({ if (intraday) client.estimateHistory(h.code) else client.history(h.code, range, yield) }, { points ->
-                if (!chartRequest.isCurrent(token)) return@network
-                if (points.isEmpty() && !cached.isNullOrEmpty()) { toast("暂无新走势，保留本机缓存"); return@network }
-                display.removeAllViews()
-                if (points.isEmpty()) display.addView(ui.centered("该时段暂无数据")) else {
-                    store.putCache(key, encodePoints(points)); display.addView(ui.text(if (yield) "基金区间涨幅（%），与个人账户收益不同" else if (intraday) "盘中估值涨幅（%），仅供参考" else "历史单位净值 · 按住图表查看", 11f, ui.muted))
-                    display.addView(LineChartView(this, points, ui), LinearLayout.LayoutParams(-1, ui.dp(240)))
-                }
-            }, { error -> if (chartRequest.isCurrent(token)) { if (cached.isNullOrEmpty()) { display.removeAllViews(); display.addView(ui.centered("$error\n暂时无法显示此项数据")) } else toast("$error，保留缓存走势") } })
+        val holdingValue = q?.nav?.let { it * h.shares } ?: (h.cost * h.shares)
+        val profit = q?.nav?.let { (it - h.cost) * h.shares }
+        val rate = PortfolioMath.holdingRate(h, q?.nav)
+        val container = ui.box().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), ui.dp(16)) }
+
+        // Header: Code Badge & Benchmark Date
+        val subRow = ui.box(false).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(ui.badge(h.code, ui.accent))
+            addView(ui.text("  ·  导入/基准日期 ${h.confirmedDate ?: "未记录"}", 12f, ui.muted))
         }
-        container.addView(ui.box(false).apply {
-            listOf("月" to "y", "季" to "3y", "年" to "n", "三年" to "3n", "五年" to "5n").forEach { (label, range) -> addView(ui.button(label) { showChart(range) }, LinearLayout.LayoutParams(0, -2, 1f)) }
+        container.addView(subRow)
+
+        // Section 1: Imported Holding Details Panel (Pure Local Ledger)
+        container.addView(ui.bentoCard(radius = 16).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(10); bottomMargin = ui.dp(12) }
+            addView(ui.text("导入持仓记账 (纯本地存储)", 12f, ui.muted, bold = true))
+
+            val grid1 = ui.box(false).apply {
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
+                ui.stat(this, "持有份额", if (h.shares.signum() == 0) "0.00" else "${h.shares.stripTrailingZeros().toPlainString()} 份")
+                ui.stat(this, "平均持仓成本", if (h.cost.signum() == 0) "0.0000" else "${ui.amount(h.cost, 4)} 元")
+            }
+            addView(grid1)
+
+            val grid2 = ui.box(false).apply {
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
+                ui.stat(this, "最新公布净值", "${ui.amount(q?.nav, 4)} 元", ui.ink)
+                ui.stat(this, "持仓总市值", "${ui.amount(holdingValue)} 元", ui.ink)
+            }
+            addView(grid2)
+
+            val grid3 = ui.box(false).apply {
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
+                ui.stat(this, "持有盈亏金额", "${ui.signed(profit)} 元", ui.changeColor(profit))
+                ui.stat(this, "持有收益率", ui.signed(rate, "%"), ui.changeColor(rate))
+            }
+            addView(grid3)
+
+            q?.date?.let {
+                addView(ui.text("注：最新净值公布日期为 $it", 10f, ui.muted).apply { setPadding(0, ui.dp(6), 0, 0) })
+            }
         })
-        container.addView(display)
-        container.addView(ui.box(false).apply {
-            addView(ui.button("区间收益") { showChart("n", yield = true) }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("估值曲线") { showChart("y", intraday = true) }, LinearLayout.LayoutParams(0, -2, 1f))
+
+        // Section 2: DCA Plan Box
+        val hasDca = (h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO
+        container.addView(ui.bentoCard(radius = 16).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) }
+            val headerBox = ui.box(false).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(ui.text("每日自动定投计划", 13f, ui.ink, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(ui.badge(if (hasDca) "定投进行中" else "未开启", if (hasDca) ui.accent else ui.muted))
+            }
+            addView(headerBox)
+
+            if (hasDca) {
+                val planDesc = if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "每日定投 ${h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: ""} 元 (按公布净值折算)"
+                val ruleDesc = if (h.dcaWeekdaysOnly) "仅法定交易日 (周一至周五) 执行" else "每天均自动执行"
+                val lastDateDesc = "已自动执行并同步至: ${h.dcaLastDate ?: today()}"
+                addView(ui.text("$planDesc · $ruleDesc\n$lastDateDesc", 12f, ui.ink).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
+            } else {
+                addView(ui.text("设置每日定投后，每天打开或刷新系统会自动按计划增加份额，并加权计算平均成本。", 11f, ui.muted).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
+            }
+
+            val dcaBtn = ui.button(if (hasDca) "修改定投计划" else "开启每日定投") { setupDcaDialog(h) }
+            addView(dcaBtn)
         })
-        container.addView(ui.box(false).apply {
-            addView(ui.button("基金资料") { dataDialog("基金资料", { client.information(h.code) }, "info:${h.code}") }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("经理") { dataDialog("基金经理", { client.managers(h.code) }, "managers:${h.code}") }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("披露持仓") { dataDialog("披露持仓（非实时持仓）", { client.positions(h.code) }, "positions:${h.code}") }, LinearLayout.LayoutParams(0, -2, 1f))
-        })
+
+        // Section 3: Operation & Trade Records
         val records = portfolio.trades.filter { it.holdingId == h.id }.sortedByDescending { it.date }
-        if (records.isNotEmpty()) {
-            container.addView(ui.text("操作记录 · 建账以来", 15f, bold = true))
-            records.take(30).forEach { t -> container.addView(ui.text("${t.date}  ${when (t.kind) { "BUY" -> "加仓"; "SELL" -> "减仓"; else -> "校准" }}  ${t.shares.toPlainString()} 份\n单位价格 ${t.price.toPlainString()} · 手续费 ${ui.amount(t.fee)}" + if (t.kind == "SELL") " · 已实现 ${ui.signed(t.realized)}" else "", 12f, ui.muted)) }
-            if (records.size > 30) container.addView(ui.text("显示最近 30 条，完整记录包含在导出备份中", 11f, ui.muted))
+        container.addView(ui.text("本机操作流水记录 (${records.size})", 14f, ui.ink, bold = true))
+        if (records.isEmpty()) {
+            container.addView(ui.text("暂无追加操作流水，当前数据来自初始导入快照。", 12f, ui.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
+        } else {
+            records.take(50).forEach { t ->
+                val kindDesc = when (t.kind) {
+                    "DCA" -> "● 自动定投买入"
+                    "BUY" -> "＋ 加仓买入"
+                    "SELL" -> "－ 减仓卖出"
+                    else -> "⚙ 持仓校准"
+                }
+                val kindColor = when (t.kind) {
+                    "DCA" -> ui.accent
+                    "BUY" -> ui.rose
+                    "SELL" -> ui.green
+                    else -> ui.muted
+                }
+                val line = "${t.date}  $kindDesc  ${t.shares.stripTrailingZeros().toPlainString()} 份\n单价 ${t.price.stripTrailingZeros().toPlainString()} 元 · 手续费 ${ui.amount(t.fee)} 元" + if (t.kind == "SELL") " · 实现盈亏 ${ui.signed(t.realized)}" else ""
+                container.addView(ui.text(line, 12f, kindColor).apply { setPadding(0, ui.dp(4), 0, ui.dp(4)) })
+            }
+            if (records.size > 50) container.addView(ui.text("仅显示最新 50 条记录，完整数据保存在本地备份中。", 10f, ui.muted))
         }
-        AlertDialog.Builder(this).setTitle(h.name).setView(ScrollView(this).apply { addView(container) }).setNegativeButton("关闭", null).setPositiveButton("管理持仓") { _, _ -> holdingActions(h) }.show()
-        showChart("y")
+
+        AlertDialog.Builder(this)
+            .setTitle(h.name)
+            .setView(ScrollView(this).apply { addView(container) })
+            .setNegativeButton("关闭", null)
+            .setPositiveButton("管理持仓") { _, _ -> holdingActions(h) }
+            .show()
     }
-    private fun encodePoints(points: List<ChartPoint>) = JSONArray().also { a -> points.forEach { a.put(JSONArray().put(it.date).put(it.value.toPlainString())) } }.toString()
-    private fun decodePoints(raw: String): List<ChartPoint> { val a = JSONArray(raw); return (0 until a.length()).map { ChartPoint(a.getJSONArray(it).getString(0), BigDecimal(a.getJSONArray(it).getString(1))) } }
-    private fun dataDialog(title: String, task: () -> List<Pair<String, String>>, cacheKey: String? = null) {
-        val content = ui.box().apply { setPadding(ui.dp(20), ui.dp(8), ui.dp(20), ui.dp(10)); addView(ui.text("正在获取…", color = ui.muted)) }
-        val dialog = AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(content) }).setPositiveButton("关闭", null).show()
-        val cached = runCatching { cacheKey?.let { store.cache(it) }?.let { JSONObject(it) } }.getOrNull()
-        fun cachedRows(): List<Pair<String, String>> {
-            val rows = cached?.optJSONArray("rows") ?: return emptyList()
-            return (0 until rows.length()).map { rows.getJSONArray(it).getString(0) to rows.getJSONArray(it).getString(1) }
+    private fun setupDcaDialog(h: Holding) {
+        val box = ui.box().apply { setPadding(ui.dp(22), ui.dp(10), ui.dp(22), ui.dp(10)) }
+        val sharesField = ui.field("每日定投份额 (份，如 10.00)", h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: "", true)
+        val amountField = ui.field("或 每日定投金额 (元，按最新净值折算)", h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: "", true)
+        val weekdaySwitch = Switch(this).apply {
+            text = "仅在交易日 (周一至周五) 执行"
+            setTextColor(ui.ink)
+            isChecked = h.dcaWeekdaysOnly
+            setPadding(0, ui.dp(8), 0, ui.dp(8))
         }
-        fun draw(rows: List<Pair<String, String>>, note: String) {
-            content.removeAllViews(); content.addView(ui.text(note, 11f, ui.muted))
-            if (rows.isEmpty()) content.addView(ui.centered("数据源暂未提供此项资料"))
-            rows.forEach { (label, value) -> content.addView(ui.text(label, 12f, ui.muted)); content.addView(ui.text(value, 14f)) }
+
+        box.addView(ui.text("每日定投设置", 16f, ui.ink, bold = true))
+        box.addView(ui.text("请设置每日固定定投的份额或金额（二选一）。系统每天会自动根据日期补齐定投并加权更新平均成本：", 12f, ui.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
+        box.addView(sharesField)
+        box.addView(amountField)
+        box.addView(weekdaySwitch)
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("${h.name} · 定投")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setNegativeButton("取消", null)
+            .setPositiveButton("保存并生效", null)
+
+        val hasExistingDca = (h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO
+        if (hasExistingDca) {
+            builder.setNeutralButton("取消定投计划") { _, _ ->
+                safe {
+                    val cleared = h.copy(dcaShares = null, dcaAmount = null, dcaLastDate = null)
+                    commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) cleared else it }))
+                    toast("已取消 ${h.name} 的定投计划")
+                }
+            }
         }
-        val previous = runCatching { cachedRows() }.getOrDefault(emptyList())
-        if (previous.isNotEmpty()) draw(previous, "本机缓存 · ${cached?.optString("savedAt") ?: ""}")
-        network(task, { rows ->
-            if (!dialog.isShowing) return@network
-            if (rows.isEmpty() && previous.isNotEmpty()) { draw(previous, "暂无新资料，保留本机缓存 · ${cached?.optString("savedAt") ?: ""}"); return@network }
-            val time = java.time.OffsetDateTime.now(ZoneId.of("Asia/Shanghai")).toString()
-            if (cacheKey != null && rows.isNotEmpty()) store.putCache(cacheKey, JSONObject().put("savedAt", time)
-                .put("rows", JSONArray().also { a -> rows.forEach { a.put(JSONArray().put(it.first).put(it.second)) } }).toString())
-            draw(rows, "获取时间 $time")
-        }, { error -> if (dialog.isShowing) { if (previous.isNotEmpty()) draw(previous, "$error · 显示本机缓存 ${cached?.optString("savedAt") ?: ""}") else { content.removeAllViews(); content.addView(ui.centered(error)) } } })
+
+        val dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                try {
+                    val sVal = sharesField.text.toString().trim()
+                    val aVal = amountField.text.toString().trim()
+                    require(sVal.isNotBlank() || aVal.isNotBlank()) { "请输入每日定投的份额或金额" }
+
+                    val shares = if (sVal.isNotBlank()) sVal.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: throw IllegalArgumentException("份额必须为大于0的数值") else null
+                    val amount = if (aVal.isNotBlank()) aVal.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: throw IllegalArgumentException("金额必须为大于0的数值") else null
+
+                    val updatedHolding = h.copy(
+                        dcaShares = shares,
+                        dcaAmount = if (shares != null) null else amount,
+                        dcaWeekdaysOnly = weekdaySwitch.isChecked,
+                        dcaLastDate = h.dcaLastDate ?: prevTradingDay()
+                    )
+                    commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) updatedHolding else it }))
+                    checkAndApplyDca()
+                    render()
+                    toast("每日定投计划已保存，并已自动累计至今日！")
+                    dialog.dismiss()
+                } catch (e: Exception) {
+                    toast(e.message ?: "输入无效")
+                }
+            }
+        }
+        dialog.show()
     }
     private fun settingsPage() {
         body.addView(ui.panel().apply {
@@ -390,7 +650,10 @@ class MainActivity : Activity() {
             fun toggle(label: String, selected: Boolean, change: (Boolean) -> Unit) {
                 addView(Switch(this@MainActivity).apply { text = label; setTextColor(ui.ink); isChecked = selected; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, value -> safe { change(value) } } })
             }
-            toggle("深色外观", portfolio.settings.darkMode) { commit(portfolio.copy(settings = portfolio.settings.copy(darkMode = it))); recreate() }
+            toggle("深色外观", portfolio.settings.darkMode) { enabled ->
+                setTheme(if (enabled) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+                commit(portfolio.copy(settings = portfolio.settings.copy(darkMode = enabled)))
+            }
             toggle("前台每 60 秒刷新基金", portfolio.settings.autoRefresh) { commit(portfolio.copy(settings = portfolio.settings.copy(autoRefresh = it))); restartTimer() }
             toggle("显示持有份额", portfolio.settings.showShares) { commit(portfolio.copy(settings = portfolio.settings.copy(showShares = it))) }
             toggle("显示平均成本", portfolio.settings.showCost) { commit(portfolio.copy(settings = portfolio.settings.copy(showCost = it))) }

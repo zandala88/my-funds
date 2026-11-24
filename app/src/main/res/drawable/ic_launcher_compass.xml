@@ -1,0 +1,50 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Deep Navy Squircle Background -->
+    <path
+        android:fillColor="#0B192C"
+        android:pathData="M24,0 L84,0 A24,24 0 0,1 108,24 L108,84 A24,24 0 0,1 84,108 L24,108 A24,24 0 0,1 0,84 L0,24 A24,24 0 0,1 24,0 Z"/>
+
+    <!-- Shield Vault Perimeter Outline -->
+    <path
+        android:fillColor="#15263F"
+        android:pathData="M54,16 L84,26 C84,56 70,78 54,92 C38,78 24,56 24,26 Z"/>
+
+    <!-- Inner Shield Shading -->
+    <path
+        android:fillColor="#1E3E62"
+        android:pathData="M54,22 L78,30 C78,54 66,72 54,84 L54,22 Z"/>
+
+    <!-- Compass Grid Rings -->
+    <path
+        android:strokeColor="#2E5077"
+        android:strokeWidth="1.5"
+        android:pathData="M54,34 A20,20 0 1,1 53.9,34 Z"/>
+
+    <!-- North-East Upward Compass Pointer (Dynamic Growth Vector) -->
+    <path
+        android:fillColor="#F1C40F"
+        android:pathData="M54,54 L50,48 L76,28 L56,54 Z"/>
+    <path
+        android:fillColor="#E67E22"
+        android:pathData="M54,54 L56,54 L76,28 L60,38 Z"/>
+
+    <!-- Bottom South-West Needle -->
+    <path
+        android:fillColor="#4E657E"
+        android:pathData="M54,54 L48,60 L32,80 L52,54 Z"/>
+
+    <!-- Glowing 45-degree Surge Line with Nodes -->
+    <path
+        android:strokeColor="#00E676"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M30,68 L44,58 L54,64 L78,34"/>
+    <path
+        android:fillColor="#69F0AE"
+        android:pathData="M78,34 A4,4 0 1,1 77.9,34 Z"/>
+</vector>
