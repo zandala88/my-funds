@@ -53,7 +53,16 @@ class DcaOverviewUiTest {
         assertTrue(labels.any { it.contains("测试指数份额定投C") })
         assertFalse(labels.any { it.contains("未定投基金") })
         assertTrue(labels.any { it.contains(if (missingPrice) "等待净值" else "15.00") })
-        dialog.dismiss(); controller.pause().stop().destroy()
+        val item = dialog.listView.adapter.getView(0, null, dialog.listView)
+        assertTrue("DCA entries need a structured card", item is ViewGroup)
+        val edit = views(item).filterIsInstance<Button>().firstOrNull { it.text.toString() == "编辑计划" }
+        assertNotNull("Each DCA card needs an explicit editing action", edit)
+        edit!!.performClick(); shadowOf(Looper.getMainLooper()).idle()
+        val editor = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(views(editor.window!!.decorView).filterIsInstance<android.widget.EditText>().any {
+            it.hint.toString().startsWith("或 每日定投金额") && it.text.toString() == "10"
+        })
+        editor.dismiss(); controller.pause().stop().destroy()
         }
     }
 }

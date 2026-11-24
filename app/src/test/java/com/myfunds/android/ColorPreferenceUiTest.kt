@@ -22,18 +22,18 @@ class ColorPreferenceUiTest {
     @Test fun choosingGreenUpPersistsAndKeepsSettingsVisibleWhenThemeChanges() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
-        fun button(prefix: String) = views(activity.window.decorView).filterIsInstance<Button>().first { it.text.startsWith(prefix) }
+        fun button(prefix: String) = views(activity.window.decorView).first { it.contentDescription?.startsWith(prefix) == true }
         assertFalse(views(activity.window.decorView).filterIsInstance<Button>().any { it.text.toString() in listOf("自选", "设置") })
         views(activity.window.decorView).first { it.contentDescription == "设置" }.performClick()
         button("涨跌配色：").performClick()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
         dialog.listView.performItemClick(dialog.listView.getChildAt(1), 1, 1)
         shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(button("涨跌配色：").text.contains("绿涨红跌"))
+        assertTrue(button("涨跌配色：").contentDescription.contains("绿涨红跌"))
         LocalStore(activity).use { assertFalse(it.load().settings.redUp) }
         val dark = views(activity.window.decorView).filterIsInstance<Switch>().first { it.text.toString() == "深色外观" }
         dark.performClick(); shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(button("涨跌配色：").text.contains("绿涨红跌"))
+        assertTrue(button("涨跌配色：").contentDescription.contains("绿涨红跌"))
         LocalStore(activity).use { assertTrue(it.load().settings.darkMode); assertFalse(it.load().settings.redUp) }
         for (darkMode in listOf(false, true)) {
             val ui = Ui(activity, darkMode, false)

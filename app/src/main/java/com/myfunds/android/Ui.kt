@@ -12,7 +12,7 @@ import android.widget.*
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-class Ui(baseContext: Context, val dark: Boolean, private val redUp: Boolean = true,
+class Ui(private val baseContext: Context, val dark: Boolean, private val redUp: Boolean = true,
     val displaySize: com.myfunds.core.DisplaySize = com.myfunds.core.DisplaySize.STANDARD) {
     val scale = displaySize.factor
     // Keep the Activity as the base so dialogs retain its window token. Only this
@@ -24,6 +24,9 @@ class Ui(baseContext: Context, val dark: Boolean, private val redUp: Boolean = t
     val compact get() = context.resources.configuration.screenWidthDp / scale < 400f
     val touchTarget get() = maxOf(dp(48), (44 * context.resources.displayMetrics.density).toInt())
     fun dialog() = RoundedDialogBuilder(this)
+    fun forDisplaySize(size: com.myfunds.core.DisplaySize) = Ui(baseContext, dark, redUp, size)
+    fun rawDp(v: Int) = kotlin.math.round(v * context.resources.displayMetrics.density).toInt()
+    val headerActionSize get() = rawDp(44)
     val background = Color.parseColor(if (dark) "#0F172A" else "#F1F5F9")
     val card = Color.parseColor(if (dark) "#1E293B" else "#FFFFFF")
     val soft = Color.parseColor(if (dark) "#334155" else "#E2E8F0")
@@ -54,16 +57,14 @@ class Ui(baseContext: Context, val dark: Boolean, private val redUp: Boolean = t
         setOnClickListener { action() }
     }
     fun iconButton(resId: Int, contentDesc: String, action: () -> Unit) = ImageButton(context).apply {
-        setImageResource(resId)
-        contentDescription = contentDesc
+        setImageResource(resId); contentDescription = contentDesc; tooltipText = contentDesc
         scaleType = ImageView.ScaleType.FIT_CENTER
-        setPadding(dp(10), dp(10), dp(10), dp(10))
-        val size = touchTarget
-        minimumWidth = size
-        minimumHeight = size
-        imageTintList = ColorStateList.valueOf(accent)
-        val fill = soft
-        background = InsetDrawable(RippleDrawable(ColorStateList.valueOf(if (dark) 0x33FFFFFF else 0x221B352A), shape(fill, 22), shape(Color.WHITE, 22)), dp(2), dp(2), dp(2), dp(2))
+        val iconSize = rawDp(if (displaySize == com.myfunds.core.DisplaySize.LARGE) 22 else 20)
+        val inset = (headerActionSize - iconSize) / 2
+        setPadding(inset, inset, inset, inset)
+        minimumWidth = headerActionSize; minimumHeight = headerActionSize
+        imageTintList = ColorStateList.valueOf(muted)
+        background = RippleDrawable(ColorStateList.valueOf(if (dark) 0x22FFFFFF else 0x150F172A), null, shape(Color.WHITE, 22))
         stateListAnimator = null; elevation = 0f
         setOnClickListener { action() }
     }

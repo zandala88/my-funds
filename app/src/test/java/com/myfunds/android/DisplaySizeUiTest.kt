@@ -44,7 +44,7 @@ class DisplaySizeUiTest {
         settings.performClick()
         val sizes = mutableListOf<Float>(); val paddings = mutableListOf<Int>()
         for ((index, expected) in DisplaySize.entries.withIndex()) {
-            val control = views(activity.window.decorView).filterIsInstance<Button>().firstOrNull { it.text.startsWith("字体与界面大小") }
+            val control = views(activity.window.decorView).firstOrNull { it.contentDescription?.startsWith("字体与界面大小：") == true }
             assertNotNull("Font and layout size setting missing", control)
             control!!.performClick()
             val dialog = ShadowAlertDialog.getLatestAlertDialog()
@@ -59,7 +59,7 @@ class DisplaySizeUiTest {
         val saved = Bundle(); controller.saveInstanceState(saved).pause().stop().destroy()
         val restored = Robolectric.buildActivity(MainActivity::class.java).create(saved).start().resume().visible()
         LocalStore(restored.get()).use { assertEquals(DisplaySize.LARGE, it.load().settings.displaySize) }
-        assertTrue(views(restored.get().window.decorView).filterIsInstance<Button>().any { it.text.toString() == "字体与界面大小：较大 ▾" })
+        assertTrue(views(restored.get().window.decorView).any { it.contentDescription == "字体与界面大小：较大" })
         restored.pause().stop().destroy()
     }
 }
