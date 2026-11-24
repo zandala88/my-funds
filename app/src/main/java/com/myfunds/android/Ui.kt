@@ -12,7 +12,7 @@ import android.widget.*
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-class Ui(val context: Context, val dark: Boolean) {
+class Ui(val context: Context, val dark: Boolean, private val redUp: Boolean = true) {
     val dialogContext = android.view.ContextThemeWrapper(context, if (dark) R.style.AppTheme_Dark else R.style.AppTheme)
     fun dialog() = RoundedDialogBuilder(this)
     val background = Color.parseColor(if (dark) "#0F172A" else "#F1F5F9")
@@ -82,7 +82,7 @@ class Ui(val context: Context, val dark: Boolean) {
     }
     fun amount(n: BigDecimal?, digits: Int = 2): String = n?.setScale(digits, RoundingMode.HALF_UP)?.toPlainString() ?: "—"
     fun signed(n: BigDecimal?, suffix: String = ""): String = n?.let { (if (it > BigDecimal.ZERO) "+" else "") + amount(it) + suffix } ?: "暂无"
-    fun changeColor(n: BigDecimal?): Int = when { n == null || n.signum() == 0 -> muted; n.signum() > 0 -> rose; else -> green }
+    fun changeColor(n: BigDecimal?): Int = when { n == null || n.signum() == 0 -> muted; n.signum() > 0 -> if (redUp) rose else green; else -> if (redUp) green else rose }
     fun stat(parent: LinearLayout, label: String, value: String, color: Int = ink) {
         parent.addView(box().apply { addView(text(label, 11f, muted)); addView(text(value, 16f, color, true)) }, LinearLayout.LayoutParams(0, -2, 1f))
     }

@@ -143,7 +143,7 @@ class MainActivity : Activity() {
         }
     }
     private fun render() {
-        ui = Ui(this, portfolio.settings.darkMode)
+        ui = Ui(this, portfolio.settings.darkMode, portfolio.settings.redUp)
         root = ui.box().apply { setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(8)); setBackgroundColor(ui.background) }
         window.statusBarColor = ui.background; window.navigationBarColor = ui.background
         window.decorView.systemUiVisibility = if (portfolio.settings.darkMode) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
@@ -170,7 +170,7 @@ class MainActivity : Activity() {
         root.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
         if (tab == 0) holdingsPage() else settingsPage()
         root.addView(ui.box(false).apply {
-            ui.round(this, ui.card, 34); setPadding(ui.dp(5), ui.dp(3), ui.dp(5), ui.dp(3))
+            setPadding(0, ui.dp(3), 0, ui.dp(3))
             listOf("自选", "设置").forEachIndexed { i, label ->
                 addView(ui.button(label, primary = i == tab) { tab = i; scrollY = 0; render() }, LinearLayout.LayoutParams(0, ui.dp(56), 1f))
             }
@@ -188,7 +188,8 @@ class MainActivity : Activity() {
         val selected = portfolio.holdings.filter { group == null || it.groupId == group }
         val filtered = portfolio.copy(holdings = selected, trades = portfolio.trades.filter { t -> selected.any { it.id == t.holdingId } })
         val summary = PortfolioMath.summary(filtered, quotes.mapNotNull { (code, q) -> q.nav?.let { code to it } }.toMap())
-        val dcaActiveCount = portfolio.holdings.count { (it.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (it.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO }
+        val dcaBudget = DcaBudget.daily(portfolio.holdings, quotes)
+        val dcaActiveCount = dcaBudget.plans
 
         // Bento Row 1: Top Asymmetric 2-Card Row
         body.addView(ui.box(false).apply {
@@ -211,9 +212,14 @@ class MainActivity : Activity() {
 
             // Right Card: DCA Automatic Status
             val rightCard = ui.bentoCard().apply {
-                addView(ui.text("自动定投", 11f, ui.muted))
-                addView(ui.text("$dcaActiveCount 只", 22f, ui.accent, bold = true))
-                addView(ui.badge(if (dcaActiveCount > 0) "工作日累计中" else "未开启定投", if (dcaActiveCount > 0) ui.accent else ui.muted))
+                addView(ui.text("每日定投预计", 11f, ui.muted))
+                addView(ui.text("¥ ${ui.amount(dcaBudget.total)}", 22f, ui.accent, bold = true).apply {
+                    maxLines = 1
+                    setAutoSizeTextTypeUniformWithConfiguration(12, 22, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+                })
+                addView(ui.text("$dcaActiveCount 只 · 全部分组", 11f, ui.muted))
+                if (dcaBudget.missingPrices > 0) addView(ui.text("已知 ¥${ui.amount(dcaBudget.knownAmount)}\n${dcaBudget.missingPrices} 只待净值", 10f, ui.muted))
+                else addView(ui.text("按计划执行日计算", 10f, ui.muted))
             }
             addView(rightCard, LinearLayout.LayoutParams(0, -1, 1f))
         })
@@ -539,9 +545,11 @@ class MainActivity : Activity() {
 
             if (hasDca) {
                 val planDesc = if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "每日定投 ${h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: ""} 元 (按公布净值折算)"
-                val ruleDesc = if (h.dcaWeekdaysOnly) "仅法定交易日 (周一至周五) 执行" else "每天均自动执行"
+                val ruleDesc = if (h.dcaWeekdaysOnly) "仅周一至周五执行" else "每天均自动执行"
                 val lastDateDesc = "已自动执行并同步至: ${h.dcaLastDate ?: today()}"
                 addView(ui.text("$planDesc · $ruleDesc\n$lastDateDesc", 12f, ui.ink).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
+                val budget = DcaBudget.daily(listOf(h), quotes)
+                addView(ui.text("单日预计投入 ¥${ui.amount(budget.total)}" + if (budget.missingPrices > 0) " · 等待净值" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) " · 按最新净值估算" else "", 13f, ui.accent, true))
             } else {
                 addView(ui.text("设置每日定投后，每天打开或刷新系统会自动按计划增加份额，并加权计算平均成本。", 11f, ui.muted).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
             }
@@ -565,8 +573,8 @@ class MainActivity : Activity() {
                 }
                 val kindColor = when (t.kind) {
                     "DCA" -> ui.accent
-                    "BUY" -> ui.rose
-                    "SELL" -> ui.green
+                    "BUY" -> ui.changeColor(BigDecimal.ONE)
+                    "SELL" -> ui.changeColor(BigDecimal.ONE.negate())
                     else -> ui.muted
                 }
                 val line = "${t.date}  $kindDesc  ${t.shares.stripTrailingZeros().toPlainString()} 份\n单价 ${t.price.stripTrailingZeros().toPlainString()} 元 · 手续费 ${ui.amount(t.fee)} 元" + if (t.kind == "SELL") " · 实现盈亏 ${ui.signed(t.realized)}" else ""
@@ -658,6 +666,11 @@ class MainActivity : Activity() {
             toggle("前台每 60 秒刷新基金", portfolio.settings.autoRefresh) { commit(portfolio.copy(settings = portfolio.settings.copy(autoRefresh = it))); restartTimer() }
             toggle("显示持有份额", portfolio.settings.showShares) { commit(portfolio.copy(settings = portfolio.settings.copy(showShares = it))) }
             toggle("显示平均成本", portfolio.settings.showCost) { commit(portfolio.copy(settings = portfolio.settings.copy(showCost = it))) }
+            addView(ui.button("涨跌配色：" + if (portfolio.settings.redUp) "红涨绿跌 ▾" else "绿涨红跌 ▾") {
+                ui.dialog().setTitle("涨跌配色").setItems(arrayOf("红涨绿跌", "绿涨红跌")) { _, index ->
+                    safe { commit(portfolio.copy(settings = portfolio.settings.copy(redUp = index == 0))) }
+                }.setNegativeButton("取消", null).show()
+            })
             addView(ui.text("退出到后台或锁屏即停止刷新。", 11f, ui.muted))
         })
         body.addView(ui.panel().apply {
@@ -679,7 +692,7 @@ class MainActivity : Activity() {
             addView(ui.text("本机数据", 18f, bold = true))
             addView(ui.text("${portfolio.holdings.size} 只基金 · ${portfolio.trades.size} 条操作记录\n行情来源：东方财富 / 天天基金\n无账号、广告、推送或后台常驻服务", 12f, ui.muted))
             addView(ui.button("清理基金缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); toast("基金缓存已清理，持仓数据保留"); render() } })
-            addView(ui.text("拾盈 0.3.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.text("拾盈 0.4.0 · 原生安卓", 11f, ui.muted))
             addView(ui.button("开源许可与识别模型") {
                 safe {
                     val notice = assets.list("licenses").orEmpty().sorted().joinToString("\n\n") { name ->

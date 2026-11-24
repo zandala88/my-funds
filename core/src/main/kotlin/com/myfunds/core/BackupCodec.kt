@@ -27,7 +27,7 @@ object BackupCodec {
             .put("fee", t.fee.toPlainString()).put("date", t.date).put("realized", t.realized.toPlainString())) } })
         val s = p.settings
         root.put("settings", JSONObject().put("darkMode", s.darkMode).put("autoRefresh", s.autoRefresh).put("sort", s.sort)
-            .put("showShares", s.showShares).put("showCost", s.showCost).put("indexCodes", JSONArray(s.indexCodes)))
+            .put("redUp", s.redUp).put("showShares", s.showShares).put("showCost", s.showCost).put("indexCodes", JSONArray(s.indexCodes)))
         return root.toString().also { require(it.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "备份超过 8MB 限制" } }
     }
 
@@ -74,7 +74,7 @@ object BackupCodec {
         val s = root.getJSONObject("settings"); val indices = s.getJSONArray("indexCodes")
         require(indices.length() <= 12)
         Portfolio(holdings, groups, trades, AppSettings(bool(s, "darkMode"), bool(s, "autoRefresh"), text(s, "sort"),
-            bool(s, "showShares"), bool(s, "showCost"), (0 until indices.length()).map { indices.getString(it) })).validate()
+            bool(s, "showShares"), bool(s, "showCost"), (0 until indices.length()).map { indices.getString(it) }, if (s.has("redUp")) bool(s, "redUp") else true)).validate()
     } catch (e: IllegalArgumentException) { throw e }
       catch (_: Exception) { throw IllegalArgumentException("备份文件损坏或缺少必要字段") }
 }

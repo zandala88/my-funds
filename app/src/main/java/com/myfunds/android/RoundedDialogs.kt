@@ -48,6 +48,9 @@ fun Ui.prepareDialog(dialog: Dialog) {
         if (dialog is AlertDialog) {
             listOf(DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE, DialogInterface.BUTTON_NEUTRAL).forEach { id ->
                 dialog.getButton(id)?.apply {
+                    // Pill backgrounds and extra margins must not participate in the platform's
+                    // text-baseline alignment, which can move the button above the bar.
+                    (parent as? LinearLayout)?.isBaselineAligned = false
                     isAllCaps = false; textSize = 13f
                     setTextColor(if (id == DialogInterface.BUTTON_POSITIVE) Color.WHITE else accent)
                     background = shape(if (id == DialogInterface.BUTTON_POSITIVE) accent else soft, 22)

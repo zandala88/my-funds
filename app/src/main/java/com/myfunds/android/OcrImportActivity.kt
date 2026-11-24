@@ -29,6 +29,8 @@ class OcrImportActivity : Activity() {
     private var defaultChosenDate: String = ""
     private lateinit var dateControls: LinearLayout
     private lateinit var cancelButton: Button
+    private lateinit var selectAll: CheckBox
+    private var updatingSelection = false
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
     private val client = MarketClient()
@@ -46,9 +48,10 @@ class OcrImportActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val dark = LocalStore(this).use { runCatching { it.load().settings.darkMode }.getOrDefault(false) }
+        val settings = LocalStore(this).use { runCatching { it.load().settings }.getOrDefault(AppSettings()) }
+        val dark = settings.darkMode
         setTheme(if (dark) R.style.AppTheme_Dark else R.style.AppTheme)
-        ui = Ui(this, dark)
+        ui = Ui(this, dark, settings.redUp)
         val root = ui.box().apply { setPadding(ui.dp(18), ui.dp(12), ui.dp(18), ui.dp(8)); setBackgroundColor(ui.background) }
         root.addView(ui.box(false).apply {
             addView(ui.text("截图导入", 27f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
@@ -77,6 +80,19 @@ class OcrImportActivity : Activity() {
             })
         }
         root.addView(dateControls)
+        selectAll = CheckBox(this).apply {
+            text = "全选"; setTextColor(ui.ink); buttonTintList = ColorStateList.valueOf(ui.accent)
+            minHeight = ui.dp(48); visibility = View.GONE
+            setOnCheckedChangeListener { _, checked ->
+                if (!updatingSelection) {
+                    updatingSelection = true
+                    try { rows.forEach { it.selected.isChecked = checked } }
+                    finally { updatingSelection = false }
+                    updateSelectionControl()
+                }
+            }
+        }
+        root.addView(selectAll)
         cards = ui.box().apply { setPadding(0, ui.dp(10), 0, ui.dp(10)) }
         root.addView(ScrollView(this).apply { addView(cards) }, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(ui.button("核对完成，导入勾选项", primary = true) { confirm() })
@@ -194,7 +210,7 @@ class OcrImportActivity : Activity() {
     }
     private data class BatchResult(val text: String, val candidates: List<BatchHoldingCandidate>, val failed: List<String>, val empty: List<Int>)
     private fun recognize(images: List<Uri>) {
-        cancelRecognition(); rawText = ""; rows.clear(); cards.removeAllViews(); dateControls.visibility = View.GONE
+        cancelRecognition(); rawText = ""; rows.clear(); cards.removeAllViews(); dateControls.visibility = View.GONE; updateSelectionControl()
         cancellation = AtomicBoolean(false); val cancelled = cancellation; val ticket = generation
         progress.visibility = View.VISIBLE; cancelButton.visibility = View.VISIBLE; status.text = "正在读取 ${images.size} 张截图，识别过程不联网…"
         worker = executor.submit {
@@ -293,6 +309,7 @@ class OcrImportActivity : Activity() {
             val dateBtn = ui.button(formatDisplayDate(initialDate)) { showRowDateDialog(rowRef) }
             val row = Row(selected, name, code, shares, cost, initialDate, dateBtn, mode, draft.mode, draft.reference)
             rowRef = row; rows.add(row)
+            selected.setOnCheckedChangeListener { _, _ -> if (!updatingSelection) updateSelectionControl() }
             panel.addView(selected)
             if (draft.reference.isNotBlank()) panel.addView(ui.text(draft.reference, 12f, ui.muted))
             panel.addView(ui.text("基金名称", 12f, ui.muted)); panel.addView(name)
@@ -304,6 +321,16 @@ class OcrImportActivity : Activity() {
             panel.addView(ui.text("持仓结算日期（点击切换已结算/未结算）", 12f, ui.muted)); panel.addView(dateBtn)
             cards.addView(panel)
         }
+        updateSelectionControl()
+    }
+    private fun updateSelectionControl() {
+        val count = rows.count { it.selected.isChecked }
+        updatingSelection = true
+        try {
+            selectAll.visibility = if (rows.isEmpty()) View.GONE else View.VISIBLE
+            selectAll.text = "全选 · 已选 $count/${rows.size}"
+            selectAll.isChecked = rows.isNotEmpty() && count == rows.size
+        } finally { updatingSelection = false }
     }
     private fun editText() {
         val input = ui.field("识别文字").apply {

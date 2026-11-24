@@ -15,7 +15,7 @@ data class Trade(val id: String, val holdingId: String, val kind: String, val sh
     val price: BigDecimal, val fee: BigDecimal, val date: String, val realized: BigDecimal = BigDecimal.ZERO)
 data class AppSettings(val darkMode: Boolean = false, val autoRefresh: Boolean = false,
     val sort: String = "manual", val showShares: Boolean = true, val showCost: Boolean = true,
-    val indexCodes: List<String> = listOf("1.000001", "0.399001", "0.399006"))
+    val indexCodes: List<String> = listOf("1.000001", "0.399001", "0.399006"), val redUp: Boolean = true)
 data class Portfolio(val holdings: List<Holding> = emptyList(),
     val groups: List<Group> = listOf(Group("default", "默认分组")),
     val trades: List<Trade> = emptyList(), val settings: AppSettings = AppSettings()) {
