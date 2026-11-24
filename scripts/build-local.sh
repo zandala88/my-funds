@@ -7,4 +7,7 @@ if [ -z "${JAVA_HOME:-}" ] && [ -d "$funds_tools/jdk/Contents/Home" ]; then
 fi
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 if [ -n "${JAVA_HOME:-}" ]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
+if [ -x "$funds_tools/gradle-8.9/bin/gradle" ]; then
+  exec "$funds_tools/gradle-8.9/bin/gradle" "$@"
+fi
 exec ./gradlew "$@"

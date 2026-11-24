@@ -36,10 +36,10 @@
 
 **Interfaces:** Produces Portfolio, Holding, Group, Trade, AppSettings; PortfolioOperations.buy/sell/calibrate; PortfolioMath.summary; BackupCodec.encode/decode(String): Portfolio.
 
-- [ ] Add build configuration and wrapper; put portable build tools in a user cache outside the repository.
-- [ ] Write tests for exact buy/sell fee arithmetic, oversell/negative rejection, full backup roundtrip, leading-zero codes, invalid references/duplicates/future versions and bad decimals. Run ./gradlew :core:test; expect missing production symbols.
-- [ ] Implement domain validation, decimal math and schema-versioned backup codec. Use nullable unknown values rather than synthetic zeroes.
-- [ ] Run ./gradlew :core:test; expect all tests pass. Commit source and evidence.
+- [x] Add build configuration and wrapper; put portable build tools in a user cache outside the repository.
+- [x] Write tests for exact buy/sell fee arithmetic, oversell/negative rejection, full backup roundtrip, leading-zero codes, invalid references/duplicates/future versions and bad decimals. Run ./gradlew :core:test; expect missing production symbols.
+- [x] Implement domain validation, decimal math and schema-versioned backup codec. Use nullable unknown values rather than synthetic zeroes.
+- [x] Run ./gradlew :core:test; expect all tests pass. Commit source and evidence.
 
 ### Task 2: Market parsing and direct HTTPS data
 
@@ -47,9 +47,9 @@
 
 **Interfaces:** Consumes Holding.code; produces FundQuote/SearchResult/ChartPoint/IndexQuote, MarketParser and Android MarketClient. FundQuote carries published date, nullable estimated values and estimate time separately.
 
-- [ ] Write fixtures testing missing estimate fields, null Datas, provider business errors, malformed/null fields, historical series and six-digit search codes. Observe :core:test fail.
-- [ ] Implement defensive parsers and HTTPS client with timeout, bounded response size, encoded params and no personal portfolio payload. Include on-demand overview/manager/disclosed holdings/market data endpoints from the reference repo.
-- [ ] Run :core:test; expect pass. Probe representative live endpoints once and record successes and unavailable datasets honestly. Commit.
+- [x] Write fixtures testing missing estimate fields, null Datas, provider business errors, malformed/null fields, historical series and six-digit search codes. Observe :core:test fail.
+- [x] Implement defensive parsers and HTTPS client with timeout, bounded response size, encoded params and no personal portfolio payload. Include on-demand overview/manager/disclosed holdings/market data endpoints from the reference repo.
+- [x] Run :core:test; expect pass. Probe representative live endpoints once and record successes and unavailable datasets honestly. Commit.
 
 ### Task 3: Native local application and migration files
 
@@ -57,11 +57,11 @@
 
 **Interfaces:** Consumes core portfolio models/codecs and MarketClient. LocalStore.load/save/replaceWithBackup/restorePrevious preserves one complete portfolio transactionally; cached quotes are stored separately. MainActivity owns document intents and the visible refresh lifecycle.
 
-- [ ] Write Android instrumentation tests for persistent restart, transactional invalid-import preservation, repeat import, cached-quote reload and restore-previous; these must not require live network. First run compilation expecting missing LocalStore.
-- [ ] Implement SQLite storage with transactions and persisted import restore point; all fallible import validation precedes mutation.
-- [ ] Implement native Chinese UI: portfolio and groups/sorting, search/add/edit/buy/sell/calibrate, overview and records, detail chart/metadata/manager/disclosed holdings, indices and market datasets, settings, cache cleanup and document export/import/undo. No production sample holdings.
-- [ ] Enforce lifecycle-aware optional 60-second foreground refresh; pause/cancel on stop; retain cache on failures; display precise data dates and estimate markers. Disable OS backup/transfer extraction and request INTERNET only.
-- [ ] Run :core:test :app:assembleDebug :app:lintDebug and instrumentation if an emulator is available. Confirm document/file operations show success only after streams close. Commit.
+- [x] Write Android instrumentation tests for persistent restart, transactional invalid-import preservation, repeat import, cached-quote reload and restore-previous; these must not require live network. First run compilation expecting missing LocalStore.
+- [x] Implement SQLite storage with transactions and persisted import restore point; all fallible import validation precedes mutation.
+- [x] Implement native Chinese UI: portfolio and groups/sorting, search/add/edit/buy/sell/calibrate, overview and records, detail chart/metadata/manager/disclosed holdings, indices and market datasets, settings, cache cleanup and document export/import/undo. No production sample holdings.
+- [x] Enforce lifecycle-aware optional 60-second foreground refresh; pause/cancel on stop; retain cache on failures; display precise data dates and estimate markers. Disable OS backup/transfer extraction and request INTERNET only.
+- [x] Run :core:test :app:assembleDebug :app:lintDebug and instrumentation if an emulator is available. Confirm document/file operations show success only after streams close. Commit.
 
 ### Task 4: Release, review and reproducible delivery
 
@@ -69,7 +69,7 @@
 
 **Interfaces:** Produces reproducible developer instructions and a signed APK plus SHA-256 and measured bytes. Signing material remains outside source control.
 
-- [ ] Build signed optimized release with a persistent local key; verify signature and manifest permissions with SDK tools.
-- [ ] Run :core:test :app:lintDebug :app:assembleRelease; run available emulator/instrumentation checks and clearly record any unrun hardware checks.
-- [ ] Review whole branch using requesting-code-review; fix important findings with regression tests, then rerun required checks.
-- [ ] Document installation, backup/import recovery, data availability, offline behavior, APK size and signing-key retention. Commit completed work; keep current branch and do not push automatically.
+- [x] Build signed optimized release with a persistent local key; verify signature and manifest permissions with SDK tools.
+- [x] Run :core:test :app:lintDebug :app:assembleRelease; run available emulator/instrumentation checks and clearly record any unrun hardware checks.
+- [x] Review whole branch using requesting-code-review; fix important findings with regression tests, then rerun required checks.
+- [x] Document installation, backup/import recovery, data availability, offline behavior, APK size and signing-key retention. Commit completed work; keep current branch and do not push automatically.
