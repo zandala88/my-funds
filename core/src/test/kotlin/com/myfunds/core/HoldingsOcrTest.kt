@@ -148,4 +148,51 @@ class HoldingsOcrTest {
         assertEquals("2026-11-20", row.confirmedDate)
         assertTrue(row.issues.isEmpty())
     }
+    @Test fun alipayBadgesAndNavDoNotCreatePhantomFunds() {
+        // Representative engine output, with synthetic account values.
+        val rows = HoldingsOcr.parse("""
+            资产详情
+            摩根标普500指数(QDIDA
+            017641 中高风险“ES到指数基金名 详情
+            金额(元)
+            1220.00
+            昨日收益(元) O 持有收益(元) O 持有收益率 中
+            -12.17 -93.07 -9.04%
+            持有人金额 1200.00 待确认金额 20.00
+            持仓成本价 1.6886 持有份额 777.77
+            日涨幅 -3.35% 基金净值 1.5360(11-20)
+            预计11.26日 星期四 确认份额
+            累计收益
+            -100.00
+        """.trimIndent())
+        assertEquals(1, rows.size)
+        val row = rows.single()
+        assertEquals("017641", row.code)
+        assertEquals(d("1200.00"), row.amount)
+        assertEquals(d("777.77"), row.shares)
+        assertEquals(d("1.6886"), row.cost)
+        assertEquals(d("-93.07"), row.profit)
+        assertEquals("2026-11-20", row.confirmedDate)
+    }
+    @Test fun badgeOnSeparateLineAndPendingOnlyAmountAreIgnored() {
+        val rows = HoldingsOcr.parse("摩根标普500指数(QDII)A\n017641\n中高风险 金选 指数基金\n待确认金额 20.00\n基金净值 1.5360(11-20)")
+        assertEquals(1, rows.size)
+        assertNull(rows.single().amount)
+        assertNull(rows.single().shares)
+        assertNull(rows.single().cost)
+    }
+    @Test fun fundNameAndFirstAmountCanShareOneOcrRow() {
+        val rows = HoldingsOcr.parse("华夏成长混合A 000001 持有金额 1000.00\n持有份额 500.00\n平均成本 2.00")
+        assertEquals(1, rows.size)
+        assertEquals("000001", rows.single().code)
+        assertEquals(d("1000.00"), rows.single().amount)
+        assertEquals(d("500.00"), rows.single().shares)
+    }
+    @Test fun riskBadgeOnNewFundRowNeverOverwritesPreviousHoldings() {
+        val rows = HoldingsOcr.parse("华夏成长混合A 000001\n持有份额100\n平均成本1.2\n招商中证白酒指数A 161725 中高风险\n持有份额200\n平均成本2.3")
+        assertEquals(2, rows.size)
+        assertEquals(listOf("000001", "161725"), rows.map { it.code })
+        assertEquals(listOf(d("100"), d("200")), rows.map { it.shares })
+        assertEquals("招商中证白酒指数A", rows.last().name)
+    }
 }

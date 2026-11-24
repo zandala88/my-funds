@@ -58,11 +58,11 @@ class MainActivity : Activity() {
         store = LocalStore(this)
         try { portfolio = store.load(); quotes = store.loadQuotes() }
         catch (_: Exception) {
-            AlertDialog.Builder(this).setTitle("本机数据读取失败").setMessage("原数据未覆盖。请保留备份，重新打开应用或恢复备份后再试。")
+            Ui(this, false).dialog().setTitle("本机数据读取失败").setMessage("原数据未覆盖。请保留备份，重新打开应用或恢复备份后再试。")
                 .setPositiveButton("关闭") { _, _ -> finish() }.setCancelable(false).show(); return
         }
         group = savedInstanceState?.getString("selectedGroup")?.takeIf { id -> portfolio.groups.any { it.id == id } }
-        setTheme(if (portfolio.settings.darkMode) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+        setTheme(if (portfolio.settings.darkMode) R.style.AppTheme_Dark else R.style.AppTheme)
         render()
         window.decorView.setOnApplyWindowInsetsListener { _, insets ->
             if (::root.isInitialized) root.setPadding(ui.dp(16), insets.systemWindowInsetTop + ui.dp(8), ui.dp(16), insets.systemWindowInsetBottom + ui.dp(6))
@@ -147,7 +147,7 @@ class MainActivity : Activity() {
         root = ui.box().apply { setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(8)); setBackgroundColor(ui.background) }
         window.statusBarColor = ui.background; window.navigationBarColor = ui.background
         window.decorView.systemUiVisibility = if (portfolio.settings.darkMode) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-        root.addView(ui.text(if (tab == 0) "个人基金簿" else "本机与备份", 12f, ui.muted))
+        root.addView(ui.text(if (tab == 0) "拾盈 · 个人基金簿" else "本机与备份", 12f, ui.muted))
         root.addView(ui.box(false).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(ui.text(if (tab == 0) "我的自选" else "设置", 29f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
@@ -349,16 +349,16 @@ class MainActivity : Activity() {
     }
     private fun sortDialog() {
         val values = listOf("manual", "name", "profit", "change")
-        AlertDialog.Builder(this).setTitle("排序方式").setItems(arrayOf("自定义 / 关注优先", "基金名称", "持有收益", "涨跌幅")) { _, i -> safe { commit(portfolio.copy(settings = portfolio.settings.copy(sort = values[i]))) } }.show()
+        ui.dialog().setTitle("排序方式").setItems(arrayOf("自定义 / 关注优先", "基金名称", "持有收益", "涨跌幅")) { _, i -> safe { commit(portfolio.copy(settings = portfolio.settings.copy(sort = values[i]))) } }.show()
     }
     private fun chooseGroup() {
         val labels = listOf("全部基金") + portfolio.groups.map { it.name } + "管理分组"
-        AlertDialog.Builder(this).setTitle("选择分组").setItems(labels.toTypedArray()) { _, i ->
+        ui.dialog().setTitle("选择分组").setItems(labels.toTypedArray()) { _, i ->
             if (i == labels.lastIndex) manageGroups() else { group = if (i == 0) null else portfolio.groups[i - 1].id; render() }
         }.show()
     }
     private fun manageGroups() {
-        AlertDialog.Builder(this).setTitle("管理分组").setItems((listOf("＋ 新建分组") + portfolio.groups.filter { it.id != "default" }.map { "删除 ${it.name}（基金移回默认组）" }).toTypedArray()) { _, i ->
+        ui.dialog().setTitle("管理分组").setItems((listOf("＋ 新建分组") + portfolio.groups.filter { it.id != "default" }.map { "删除 ${it.name}（基金移回默认组）" }).toTypedArray()) { _, i ->
             if (i == 0) {
                 val name = ui.field("分组名称")
                 form("新建分组", listOf(name)) { require(name.text.isNotBlank()); commit(portfolio.copy(groups = portfolio.groups + Group(UUID.randomUUID().toString(), name.text.toString().trim()))) }
@@ -374,7 +374,7 @@ class MainActivity : Activity() {
         val box = ui.box().apply { setPadding(ui.dp(18), 0, ui.dp(18), 0) }
         val query = ui.field("基金名称或六位代码"); val results = ui.box()
         box.addView(query); box.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(-1, ui.dp(300)))
-        val dialog = AlertDialog.Builder(this).setTitle("添加自选基金").setView(box).setPositiveButton("搜索", null).setNegativeButton("取消", null).create()
+        val dialog = ui.dialog().setTitle("添加自选基金").setView(box).setPositiveButton("搜索", null).setNegativeButton("取消", null).create()
         dialog.setOnShowListener { dialog.getButton(-1).setOnClickListener {
             val value = query.text.toString().trim(); if (value.isBlank()) return@setOnClickListener
             val token = request.next()
@@ -398,7 +398,7 @@ class MainActivity : Activity() {
         val box = ui.box().apply { setPadding(ui.dp(22), ui.dp(8), ui.dp(22), ui.dp(8)) }
         inputs.forEach { field -> box.addView(ui.text(field.hint?.toString() ?: "", 12f, ui.muted)); box.addView(field) }
         if (note.isNotEmpty()) box.addView(ui.text(note, 11f, ui.muted))
-        val dialog = AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(box) }).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
+        val dialog = ui.dialog().setTitle(title).setView(ScrollView(this).apply { addView(box) }).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
         dialog.setOnShowListener { dialog.getButton(-1).setOnClickListener { try { action(); dialog.dismiss() } catch (e: Exception) { toast(e.message ?: "输入无效") } } }
         dialog.show()
     }
@@ -420,15 +420,16 @@ class MainActivity : Activity() {
         field.setOnClickListener {
             val td = today(); val prev = prevTradingDay()
             val options = arrayOf("今天已结算 ($td)", "今天未结算 ($prev)", "从日历选择其他日期…")
-            AlertDialog.Builder(this).setTitle("选择结算日期").setItems(options) { _, which ->
+            ui.dialog().setTitle("选择结算日期").setItems(options) { _, which ->
                 when (which) {
                     0 -> field.setText(td)
                     1 -> field.setText(prev)
                     2 -> {
                         val parsed = runCatching { LocalDate.parse(field.text.toString().trim()) }.getOrNull() ?: LocalDate.now(ZoneId.of("Asia/Shanghai"))
-                        val dlg = android.app.DatePickerDialog(this, { _, y, m, d ->
+                        val dlg = android.app.DatePickerDialog(ui.dialogContext, { _, y, m, d ->
                             field.setText(LocalDate.of(y, m + 1, d).toString())
                         }, parsed.year, parsed.monthValue - 1, parsed.dayOfMonth)
+                        ui.prepareDialog(dlg)
                         dlg.datePicker.maxDate = System.currentTimeMillis()
                         dlg.show()
                     }
@@ -463,7 +464,7 @@ class MainActivity : Activity() {
     }
     private fun holdingActions(h: Holding) {
         val labels = arrayOf("查看本地账目", "每日定投设置", "编辑持仓", "记录加仓", "记录减仓", "持仓校准 / 分红折算", if (h.starred) "取消特别关注" else "特别关注", "移动到分组", "移到最前", "删除基金及其操作记录")
-        AlertDialog.Builder(this).setTitle(h.name).setItems(labels) { _, i -> safe {
+        ui.dialog().setTitle(h.name).setItems(labels) { _, i -> safe {
             when (i) {
                 0 -> showHoldingLedger(h)
                 1 -> setupDcaDialog(h)
@@ -472,9 +473,9 @@ class MainActivity : Activity() {
                 4 -> transaction(h, "SELL")
                 5 -> transaction(h, "CALIBRATE")
                 6 -> commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(starred = !it.starred) else it }))
-                7 -> AlertDialog.Builder(this).setTitle("移动到分组").setItems(portfolio.groups.map { it.name }.toTypedArray()) { _, g -> safe { commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(groupId = portfolio.groups[g].id) else it })) } }.show()
+                7 -> ui.dialog().setTitle("移动到分组").setItems(portfolio.groups.map { it.name }.toTypedArray()) { _, g -> safe { commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) it.copy(groupId = portfolio.groups[g].id) else it })) } }.show()
                 8 -> commit(portfolio.copy(holdings = (listOf(h) + portfolio.holdings.filter { it.id != h.id }).mapIndexed { n, item -> item.copy(order = n) }))
-                9 -> AlertDialog.Builder(this).setTitle("删除 ${h.name}？").setMessage("同时删除该基金的本机操作记录。建议先导出备份。")
+                9 -> ui.dialog().setTitle("删除 ${h.name}？").setMessage("同时删除该基金的本机操作记录。建议先导出备份。")
                     .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ -> safe { commit(portfolio.copy(holdings = portfolio.holdings.filter { it.id != h.id }, trades = portfolio.trades.filter { it.holdingId != h.id })) } }.show()
             }
         } }.show()
@@ -574,7 +575,7 @@ class MainActivity : Activity() {
             if (records.size > 50) container.addView(ui.text("仅显示最新 50 条记录，完整数据保存在本地备份中。", 10f, ui.muted))
         }
 
-        AlertDialog.Builder(this)
+        ui.dialog()
             .setTitle(h.name)
             .setView(ScrollView(this).apply { addView(container) })
             .setNegativeButton("关闭", null)
@@ -598,7 +599,7 @@ class MainActivity : Activity() {
         box.addView(amountField)
         box.addView(weekdaySwitch)
 
-        val builder = AlertDialog.Builder(this)
+        val builder = ui.dialog()
             .setTitle("${h.name} · 定投")
             .setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton("取消", null)
@@ -651,7 +652,7 @@ class MainActivity : Activity() {
                 addView(Switch(this@MainActivity).apply { text = label; setTextColor(ui.ink); isChecked = selected; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, value -> safe { change(value) } } })
             }
             toggle("深色外观", portfolio.settings.darkMode) { enabled ->
-                setTheme(if (enabled) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+                setTheme(if (enabled) R.style.AppTheme_Dark else R.style.AppTheme)
                 commit(portfolio.copy(settings = portfolio.settings.copy(darkMode = enabled)))
             }
             toggle("前台每 60 秒刷新基金", portfolio.settings.autoRefresh) { commit(portfolio.copy(settings = portfolio.settings.copy(autoRefresh = it))); restartTimer() }
@@ -665,7 +666,7 @@ class MainActivity : Activity() {
             addView(ui.button("导出完整备份") { pickDocument(true) })
             addView(ui.button("导入备份 / 换机恢复") { pickDocument(false) })
             addView(ui.button("恢复至上次导入前") {
-                AlertDialog.Builder(this@MainActivity).setTitle("恢复导入前的数据？").setMessage("将覆盖当前持仓和设置。可以先导出当前备份。")
+                ui.dialog().setTitle("恢复导入前的数据？").setMessage("将覆盖当前持仓和设置。可以先导出当前备份。")
                     .setNegativeButton("取消", null).setPositiveButton("恢复") { _, _ -> safe {
                         check(active && !isDestroyed && !importing); importing = true
                         try { check(store.restorePrevious()) { "还没有可恢复的导入前备份" }; portfolio = store.load() }
@@ -678,13 +679,13 @@ class MainActivity : Activity() {
             addView(ui.text("本机数据", 18f, bold = true))
             addView(ui.text("${portfolio.holdings.size} 只基金 · ${portfolio.trades.size} 条操作记录\n行情来源：东方财富 / 天天基金\n无账号、广告、推送或后台常驻服务", 12f, ui.muted))
             addView(ui.button("清理基金缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); toast("基金缓存已清理，持仓数据保留"); render() } })
-            addView(ui.text("基金自选 0.2.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.text("拾盈 0.3.0 · 原生安卓", 11f, ui.muted))
             addView(ui.button("开源许可与识别模型") {
                 safe {
                     val notice = assets.list("licenses").orEmpty().sorted().joinToString("\n\n") { name ->
                         "—— $name ——\n" + assets.open("licenses/$name").bufferedReader(Charsets.UTF_8).use { it.readText() }
                     }
-                    AlertDialog.Builder(this@MainActivity).setTitle("开源许可与识别模型")
+                    ui.dialog().setTitle("开源许可与识别模型")
                         .setView(ScrollView(this@MainActivity).apply { setPadding(ui.dp(18), ui.dp(8), ui.dp(18), ui.dp(8)); addView(ui.text(notice, 12f)) })
                         .setPositiveButton("关闭", null).show()
                 }
@@ -715,7 +716,7 @@ class MainActivity : Activity() {
         }) { (prepared, exportedAt) ->
             if (!active) return@fileIo
             val p = prepared.portfolio
-            AlertDialog.Builder(this).setTitle("恢复此备份？").setMessage("导出时间：$exportedAt\n${p.holdings.size} 只基金、${p.trades.size} 条记录。\n将替换本机数据，替换前自动保存本机恢复点。")
+            ui.dialog().setTitle("恢复此备份？").setMessage("导出时间：$exportedAt\n${p.holdings.size} 只基金、${p.trades.size} 条记录。\n将替换本机数据，替换前自动保存本机恢复点。")
                 .setNegativeButton("取消", null).setPositiveButton("确认恢复") { _, _ -> safe {
                     check(active && !isDestroyed && !isFinishing && !importing); importing = true
                     try { store.replacePreparedBackup(prepared); portfolio = prepared.portfolio }

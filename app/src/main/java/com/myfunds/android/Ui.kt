@@ -13,6 +13,8 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 
 class Ui(val context: Context, val dark: Boolean) {
+    val dialogContext = android.view.ContextThemeWrapper(context, if (dark) R.style.AppTheme_Dark else R.style.AppTheme)
+    fun dialog() = RoundedDialogBuilder(this)
     val background = Color.parseColor(if (dark) "#0F172A" else "#F1F5F9")
     val card = Color.parseColor(if (dark) "#1E293B" else "#FFFFFF")
     val soft = Color.parseColor(if (dark) "#334155" else "#E2E8F0")
