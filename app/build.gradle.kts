@@ -13,8 +13,8 @@ android {
         applicationId = "com.myfunds.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         testInstrumentationRunner = "com.myfunds.android.LocalStoreInstrumentation"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -31,10 +31,16 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (signingFile.exists()) signingConfig = signingConfigs.getByName("localRelease")
         }
     }
     lint { abortOnError = true }
+    sourceSets.getByName("androidTest").assets.srcDir("../core/src/test/resources/ocr")
+    packaging { jniLibs { useLegacyPackaging = true } }
+    splits { abi { isEnable = true; reset(); include("arm64-v8a", "armeabi-v7a", "x86_64", "x86"); isUniversalApk = true } }
 }
-dependencies { implementation(project(":core")) }
+dependencies {
+    implementation(project(":core"))
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
+}

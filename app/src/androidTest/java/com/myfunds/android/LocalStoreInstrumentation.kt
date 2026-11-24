@@ -14,7 +14,7 @@ class LocalStoreInstrumentation : Instrumentation() {
         context.deleteDatabase(database)
         var count = 0
         fun test(name: String, action: () -> Unit) {
-            sendStatus(1, Bundle().apply { putString("class", javaClass.name); putString("test", name); putInt("numtests", 5); putInt("current", count + 1) })
+            sendStatus(1, Bundle().apply { putString("class", javaClass.name); putString("test", name); putInt("numtests", 7); putInt("current", count + 1) })
             action(); count++
             sendStatus(0, Bundle().apply { putString("class", javaClass.name); putString("test", name) })
         }
@@ -57,6 +57,26 @@ class LocalStoreInstrumentation : Instrumentation() {
                     it.replaceWithBackup(BackupCodec.encode(first))
                     check(it.restorePrevious()); check(it.load() == big)
                 }
+            }
+            test("noOpImportPreservesEarlierRecoveryPoint") {
+                LocalStore(context, database).use { store ->
+                    store.save(first)
+                    val changed = first.copy(settings = AppSettings(darkMode = true))
+                    store.replaceWithBackup(BackupCodec.encode(changed))
+                    check(!store.replaceWithBackup(BackupCodec.encode(changed)))
+                    check(store.restorePrevious()); check(store.load() == first)
+                }
+            }
+            test("offlineNativeEngineReadsSyntheticImage") {
+                val image = java.io.File.createTempFile("ocr-fixture-", ".png", context.cacheDir)
+                try {
+                    this@LocalStoreInstrumentation.context.assets.open("alipay-synthetic.png").use { input -> image.outputStream().use { input.copyTo(it) } }
+                    val lines = OfflineOcr(context).recognize(android.net.Uri.fromFile(image), java.util.concurrent.atomic.AtomicBoolean(false)) { }
+                    val parsed = HoldingsOcr.parse(lines)
+                    check(parsed.any { it.code == "000001" }); check(parsed.any { it.code == "161725" })
+                    val shares = parsed.first { it.code == "000001" }.shares
+                    check(shares == null || shares.compareTo(BigDecimal("1234.5678")) == 0)
+                } finally { image.delete() }
             }
             finish(-1, Bundle().apply { putString("stream", "\nOK ($count tests)\n") })
         } catch (t: Throwable) {

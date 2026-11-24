@@ -32,12 +32,16 @@ class LocalStore(context: Context, name: String = "portfolio.db") : SQLiteOpenHe
     fun load(): Portfolio = read("state", "key", "portfolio")?.let(BackupCodec::decode) ?: Portfolio()
     fun save(p: Portfolio) { val raw = BackupCodec.encode(p); transaction { write(it, "state", "key", "portfolio", raw) } }
     fun replaceWithBackup(raw: String) = replacePreparedBackup(BackupCodec.prepare(raw))
-    fun replacePreparedBackup(prepared: PreparedBackup) {
+    fun replacePreparedBackup(prepared: PreparedBackup): Boolean {
+        var changed = false
         transaction { db ->
+            if (load() == prepared.portfolio) return@transaction
             val count = db.compileStatement("INSERT OR REPLACE INTO state(key,payload) SELECT 'before-import',payload FROM state WHERE key='portfolio'").executeUpdateDelete()
             if (count == 0) write(db, "state", "key", "before-import", BackupCodec.encode(Portfolio()))
             write(db, "state", "key", "portfolio", prepared.encoded)
+            changed = true
         }
+        return changed
     }
     fun restorePrevious(): Boolean {
         val previous = read("state", "key", "before-import") ?: return false

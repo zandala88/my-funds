@@ -1,0 +1,21 @@
+My Funds 0.2 offline OCR notices
+
+Tesseract4Android 4.9.0, Adaptech s.r.o. / Robert Posel
+https://github.com/adaptech-cz/Tesseract4Android
+Apache License 2.0 (tesseract4android.txt)
+
+Tesseract OCR 5.5.1
+https://github.com/tesseract-ocr/tesseract
+Apache License 2.0 (same full text in tesseract4android.txt)
+
+tessdata_fast 4.1.0, chi_sim.traineddata
+https://github.com/tesseract-ocr/tessdata_fast
+Apache License 2.0 (tessdata.txt)
+SHA-256: a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730
+
+Leptonica 1.85.0 (leptonica.txt)
+libpng 1.6.48 (libpng.txt)
+Independent JPEG Group libjpeg v9f (libjpeg.txt)
+
+Recognition runs on the device. Screenshots are not sent to a recognition service.
+Only explicit fund matching and normal fund-data queries use the network.

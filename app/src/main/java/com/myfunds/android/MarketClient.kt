@@ -35,14 +35,6 @@ class MarketClient {
     fun history(code: String, range: String = "y", yield: Boolean = false): List<ChartPoint> = MarketParser.history(
         fund("FundMApi/${if (yield) "FundYieldDiagramNew" else "FundNetDiagram"}.ashx", mapOf("FCODE" to code, "RANGE" to range)), if (yield) "YIELD" else "DWJZ")
     fun estimateHistory(code: String) = MarketParser.estimateHistory(fund("FundMApi/FundVarietieValuationDetail.ashx", mapOf("FCODE" to code)))
-    fun indices(codes: List<String>): List<IndexQuote> = if (codes.isEmpty()) emptyList() else MarketParser.indices(get(
-        "https://push2.eastmoney.com/api/qt/ulist.np/get?" + params(mapOf("fltt" to "2", "fields" to "f2,f3,f4,f6,f12,f13,f14,f104,f105,f106,f124", "secids" to codes.joinToString(",")))))
-    fun indexHistory(code: String): List<ChartPoint> {
-        val raw = get("https://push2.eastmoney.com/api/qt/stock/trends2/get?" + params(mapOf("secid" to code,
-            "fields1" to "f1,f2,f3", "fields2" to "f51,f53", "ndays" to "1", "iscr" to "0")))
-        val a = MarketParser.root(raw).optJSONObject("data")?.optJSONArray("trends") ?: throw IllegalArgumentException("暂无走势图")
-        return (0 until a.length()).mapNotNull { val parts = a.getString(it).split(','); MarketParser.number(parts.getOrNull(1))?.let { value -> ChartPoint(parts[0], value) } }
-    }
     fun information(code: String): List<Pair<String, String>> {
         val data = MarketParser.root(fund("FundMApi/FundBaseTypeInformation.ashx", mapOf("FCODE" to code))).optJSONObject("Datas") ?: return emptyList()
         return fields(data, mapOf("JJMC" to "基金名称", "FCODE" to "基金代码", "FTYPE" to "基金类型", "FUNDTYPE" to "基金类型", "ESTABDATE" to "成立日期", "DWJZ" to "单位净值", "LJJZ" to "累计净值", "ENDNAV" to "基金规模（元）", "FSRQ" to "净值日期", "JJGS" to "基金公司", "JJJL" to "基金经理", "SGZT" to "申购状态", "SHZT" to "赎回状态", "BENCH" to "业绩基准", "INVESTMENTIDEA" to "投资理念", "INVESTMENTTARGET" to "投资目标"))
@@ -67,7 +59,6 @@ class MarketClient {
         }
         return result
     }
-    fun sectors(): List<IndexQuote> = MarketParser.indices(get("https://push2.eastmoney.com/api/qt/clist/get?" + params(mapOf("pn" to "1", "pz" to "30", "po" to "1", "np" to "1", "fltt" to "2", "fields" to "f2,f3,f12,f13,f14,f62,f124", "fid" to "f62", "fs" to "m:90+t:2"))))
     private fun fields(o: JSONObject, labels: Map<String, String>) = labels.mapNotNull { (key, label) ->
         MarketParser.text(o, key)?.let { label to it.replace(Regex("<[^>]*>"), "").take(4000) }
     }.distinct()

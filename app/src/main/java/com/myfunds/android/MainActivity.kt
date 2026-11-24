@@ -27,7 +27,6 @@ class MainActivity : Activity() {
     private lateinit var body: LinearLayout
     private var portfolio = Portfolio()
     private var quotes = emptyMap<String, FundQuote>()
-    private var indices = emptyList<IndexQuote>()
     private var tab = 0
     private var group: String? = null
     private var status = "持仓与设置仅保存在本机"
@@ -37,6 +36,7 @@ class MainActivity : Activity() {
     private var importing = false
     private var initialRequestDone = false
     private var holdingPage = 0
+    private var pendingScreenshotRows: String? = null
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newFixedThreadPool(2)
     private val client = MarketClient()
@@ -51,14 +51,15 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingScreenshotRows = savedInstanceState?.getString("pendingScreenshotRows")
         store = LocalStore(this)
         try { portfolio = store.load(); quotes = store.loadQuotes() }
         catch (_: Exception) {
             AlertDialog.Builder(this).setTitle("本机数据读取失败").setMessage("原数据未覆盖。请保留备份，重新打开应用或恢复备份后再试。")
                 .setPositiveButton("关闭") { _, _ -> finish() }.setCancelable(false).show(); return
         }
+        group = savedInstanceState?.getString("selectedGroup")?.takeIf { id -> portfolio.groups.any { it.id == id } }
         setTheme(if (portfolio.settings.darkMode) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
-        indices = (runCatching { store.cache("indices")?.let(MarketParser::indices) }.getOrNull() ?: emptyList()).filter { it.code in portfolio.settings.indexCodes }
         render()
         window.decorView.setOnApplyWindowInsetsListener { _, insets ->
             if (::root.isInitialized) root.setPadding(ui.dp(16), insets.systemWindowInsetTop + ui.dp(8), ui.dp(16), insets.systemWindowInsetBottom + ui.dp(6))
@@ -71,6 +72,23 @@ class MainActivity : Activity() {
         if (!::ui.isInitialized) return
         if (!initialRequestDone) { initialRequestDone = true; if (portfolio.holdings.isNotEmpty()) refreshFunds() }
         restartTimer()
+    }
+    override fun onSaveInstanceState(outState: Bundle) { pendingScreenshotRows?.let { outState.putString("pendingScreenshotRows", it) }; group?.let { outState.putString("selectedGroup", it) }; super.onSaveInstanceState(outState) }
+    override fun onResume() {
+        super.onResume()
+        val raw = pendingScreenshotRows ?: return
+        pendingScreenshotRows = null
+        safe {
+            val fresh = store.load()
+            val rows = ReviewedImport.decode(raw)
+            val destination = group?.takeIf { id -> fresh.groups.any { it.id == id } } ?: "default"
+            val next = ReviewedImport.apply(fresh, rows, destination)
+            if (next == fresh) { portfolio = fresh; toast("勾选的基金已在自选中，无需重复导入；原恢复点保留"); render(); return@safe }
+            val prepared = BackupCodec.prepare(BackupCodec.encode(next))
+            store.replacePreparedBackup(prepared); portfolio = next; holdingPage = 0
+            toast("已保存 ${rows.size} 条核对结果，导入前数据可在设置中恢复")
+            render(); refreshFunds()
+        }
     }
     override fun onStop() {
         active = false; generation++; refreshing = false; handler.removeCallbacks(refreshLoop)
@@ -110,14 +128,19 @@ class MainActivity : Activity() {
         root = ui.box().apply { setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(8)); setBackgroundColor(ui.background) }
         window.statusBarColor = ui.background; window.navigationBarColor = ui.background
         window.decorView.systemUiVisibility = if (portfolio.settings.darkMode) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-        root.addView(ui.text(when (tab) { 1 -> "市场一览"; 2 -> "本机与备份"; else -> "我的基金" }, 28f, bold = true))
-        root.addView(ui.text(when (tab) { 1 -> "行情来自东方财富 · 注意数据时间"; 2 -> "不用账号，数据跟着备份走"; else -> status }, 11f, ui.muted))
+        root.addView(ui.text(if (tab == 0) "个人基金簿" else "本机与备份", 12f, ui.muted))
+        root.addView(ui.box(false).apply {
+            addView(ui.text(if (tab == 0) "我的自选" else "设置", 29f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+            if (tab == 0) addView(ui.button(if (refreshing) "更新中" else "刷新") { refreshFunds() })
+        })
+        root.addView(ui.text(if (tab == 0) status else "数据存在本机，换机用文件恢复", 12f, ui.muted).apply { maxLines = 2 })
         body = ui.box().apply { setPadding(0, ui.dp(18), 0, ui.dp(10)) }
         root.addView(ScrollView(this).apply { isFillViewport = true; addView(body) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        when (tab) { 0 -> holdingsPage(); 1 -> marketPage(); else -> settingsPage() }
+        if (tab == 0) holdingsPage() else settingsPage()
         root.addView(ui.box(false).apply {
-            listOf("自选", "行情", "设置").forEachIndexed { i, label ->
-                addView(ui.button(if (i == tab) "● $label" else label) { tab = i; render() }, LinearLayout.LayoutParams(0, ui.dp(48), 1f))
+            ui.round(this, ui.card, 34); setPadding(ui.dp(5), ui.dp(3), ui.dp(5), ui.dp(3))
+            listOf("自选", "设置").forEachIndexed { i, label ->
+                addView(ui.button(label, primary = i == tab) { tab = i; render() }, LinearLayout.LayoutParams(0, ui.dp(56), 1f))
             }
         })
         setContentView(root); root.requestApplyInsets()
@@ -131,23 +154,24 @@ class MainActivity : Activity() {
         body.addView(ui.panel().apply {
             ui.round(this, Color.parseColor(if (ui.dark) "#294638" else "#E4EEE5"))
             addView(ui.text("持仓总额（按已公布净值）", 12f, ui.muted))
-            addView(ui.text(ui.amount(summary.marketValue), 35f, bold = true))
+            addView(ui.text(ui.amount(summary.marketValue), 39f, bold = true))
             addView(ui.box(false).apply {
                 ui.stat(this, "持有收益", ui.signed(summary.profit), ui.changeColor(summary.profit))
                 ui.stat(this, "已实现 · 建账以来", ui.signed(summary.realized), ui.changeColor(summary.realized))
             })
             if (summary.missing > 0) addView(ui.text("${summary.missing} 只持仓暂无净值，汇总暂不完整", 11f, ui.muted))
-            addView(ui.text("持有＋建账已实现  ${ui.signed(summary.totalProfit)}", 12f, ui.changeColor(summary.totalProfit)))
+            addView(ui.text("收益合计  ${ui.signed(summary.totalProfit)}", 12f, ui.changeColor(summary.totalProfit)))
             addView(ui.text("当日收益${if (daily.any { it?.estimated == true }) "（含估算）" else "（按公布涨幅）"}  ${ui.signed(dayTotal)}", 12f, ui.changeColor(dayTotal)))
         })
         body.addView(ui.box(false).apply {
-            addView(ui.button("＋ 添加") { searchDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button(if (refreshing) "更新中…" else "刷新") { refreshFunds() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("分组") { chooseGroup() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ui.button("排序") { sortDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(ui.button("＋ 添加基金", primary = true) { searchDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(ui.button("截图导入") { startActivityForResult(Intent(this@MainActivity, OcrImportActivity::class.java), 102) }, LinearLayout.LayoutParams(0, -2, 1f))
         })
         val groupName = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
-        body.addView(ui.text("$groupName   ${selected.size}", 13f, ui.muted))
+        body.addView(ui.box(false).apply {
+            addView(ui.button("$groupName · ${selected.size} ▾") { chooseGroup() }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(ui.button("排序 ▾") { sortDialog() })
+        })
         val sorted = PortfolioMath.sorted(portfolio.copy(holdings = selected), quotes, today())
         holdingPage = holdingPage.coerceIn(0, ((sorted.size - 1).coerceAtLeast(0) / 50))
         if (sorted.isEmpty()) body.addView(ui.centered("添加你关注的基金\n份额和成本可以稍后填写"))
@@ -181,7 +205,7 @@ class MainActivity : Activity() {
     private fun refreshFunds() {
         if (refreshing) return
         if (portfolio.holdings.isEmpty()) { toast("先添加一只基金"); return }
-        refreshing = true; status = "正在更新行情…"; if (tab == 0) render()
+        refreshing = true; status = "正在更新基金数据…"; if (tab == 0) render()
         val codes = portfolio.holdings.map { it.code }
         network({ client.quotes(codes) }, { rows ->
             refreshing = false; store.saveQuotes(rows); quotes = store.loadQuotes()
@@ -360,39 +384,6 @@ class MainActivity : Activity() {
             draw(rows, "获取时间 $time")
         }, { error -> if (dialog.isShowing) { if (previous.isNotEmpty()) draw(previous, "$error · 显示本机缓存 ${cached?.optString("savedAt") ?: ""}") else { content.removeAllViews(); content.addView(ui.centered(error)) } } })
     }
-    private fun marketPage() {
-        body.addView(ui.button("刷新指数") {
-            network({ client.indices(portfolio.settings.indexCodes) }, { rows ->
-                indices = MarketCache.mergeIndices(indices, rows).filter { it.code in portfolio.settings.indexCodes }
-                store.putCache("indices", encodeIndices(indices)); if (tab == 1) render()
-            })
-        })
-        if (indices.isEmpty()) body.addView(ui.centered("点击刷新获取大盘指数"))
-        indices.forEach { index -> body.addView(ui.panel().apply {
-            addView(ui.text(index.name, 17f, bold = true)); addView(ui.text("${ui.amount(index.price)}   ${ui.signed(index.change, "%")}", 24f, ui.changeColor(index.change)))
-            addView(ui.text("${index.time ?: "数据源未提供行情时间，请刷新核对"} · 点击查看走势", 11f, ui.muted))
-            setOnClickListener {
-                val content = ui.box().apply { setPadding(ui.dp(15), ui.dp(10), ui.dp(15), ui.dp(10)); addView(ui.text("正在获取走势…")) }
-                AlertDialog.Builder(this@MainActivity).setTitle(index.name).setView(content).setPositiveButton("关闭", null).show()
-                network({ client.indexHistory(index.code) }, { rows -> content.removeAllViews(); if (rows.isEmpty()) content.addView(ui.centered("暂无走势")) else content.addView(LineChartView(this@MainActivity, rows, ui), LinearLayout.LayoutParams(-1, ui.dp(250))) }, { error -> content.removeAllViews(); content.addView(ui.centered(error)) })
-            }
-        }) }
-        body.addView(ui.button("选择顶部指数") { selectIndices() })
-        body.addView(ui.button("行业板块行情") {
-            dataDialog("行业板块与主力资金", { client.sectors().map { it.name to "${ui.amount(it.price)}  ${ui.signed(it.change, "%")}\n主力净流入 ${ui.amount(it.netFlow)} 元\n${it.time ?: "数据源未提供时间"}" } })
-        })
-        body.addView(ui.text("行情可能存在延迟；基金净值请查看对应公布日期。历史停更的资金流数据不作为实时信息展示。", 12f, ui.muted))
-    }
-    private fun encodeIndices(rows: List<IndexQuote>) = JSONObject().put("rc", 0).put("data", JSONObject().put("diff", JSONArray().also { a -> rows.forEach { q -> a.put(JSONObject()
-        .put("f13", q.code.substringBefore('.').toInt()).put("f12", q.code.substringAfter('.')).put("f14", q.name)
-        .put("f2", q.price?.toPlainString() ?: "-").put("f3", q.change?.toPlainString() ?: "-")
-        .put("quoteTime", q.time ?: JSONObject.NULL).put("f62", q.netFlow?.toPlainString() ?: "-")) } })).toString()
-    private fun selectIndices() {
-        val options = listOf("1.000001" to "上证指数", "0.399001" to "深证成指", "0.399006" to "创业板指", "1.000300" to "沪深300", "1.000905" to "中证500", "1.000688" to "科创50", "1.000016" to "上证50")
-        val checked = options.map { it.first in portfolio.settings.indexCodes }.toBooleanArray()
-        AlertDialog.Builder(this).setTitle("选择指数").setMultiChoiceItems(options.map { it.second }.toTypedArray(), checked) { _, i, selected -> checked[i] = selected }
-            .setPositiveButton("保存") { _, _ -> safe { commit(portfolio.copy(settings = portfolio.settings.copy(indexCodes = options.filterIndexed { i, _ -> checked[i] }.map { it.first }))); indices = emptyList(); store.putCache("indices", encodeIndices(emptyList())); render() } }.setNegativeButton("取消", null).show()
-    }
     private fun settingsPage() {
         body.addView(ui.panel().apply {
             addView(ui.text("显示与刷新", 18f, bold = true))
@@ -423,8 +414,18 @@ class MainActivity : Activity() {
         body.addView(ui.panel().apply {
             addView(ui.text("本机数据", 18f, bold = true))
             addView(ui.text("${portfolio.holdings.size} 只基金 · ${portfolio.trades.size} 条操作记录\n行情来源：东方财富 / 天天基金\n无账号、广告、推送或后台常驻服务", 12f, ui.muted))
-            addView(ui.button("清理行情缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); indices = emptyList(); toast("行情缓存已清理，持仓数据保留"); render() } })
-            addView(ui.text("基金自选 0.1.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.button("清理基金缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); toast("基金缓存已清理，持仓数据保留"); render() } })
+            addView(ui.text("基金自选 0.2.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.button("开源许可与识别模型") {
+                safe {
+                    val notice = assets.list("licenses").orEmpty().sorted().joinToString("\n\n") { name ->
+                        "—— $name ——\n" + assets.open("licenses/$name").bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    }
+                    AlertDialog.Builder(this@MainActivity).setTitle("开源许可与识别模型")
+                        .setView(ScrollView(this@MainActivity).apply { setPadding(ui.dp(18), ui.dp(8), ui.dp(18), ui.dp(8)); addView(ui.text(notice, 12f)) })
+                        .setPositiveButton("关闭", null).show()
+                }
+            })
         })
     }
     private fun pickDocument(export: Boolean) = safe {
@@ -438,6 +439,7 @@ class MainActivity : Activity() {
     @Deprecated("Platform activity result API supports the minimum Android version")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 102 && resultCode == RESULT_OK) { pendingScreenshotRows = data?.getStringExtra("reviewedRows"); return }
         if (resultCode != RESULT_OK || data?.data == null) return
         val uri = data.data!!
         if (requestCode == 100) safe {
@@ -456,8 +458,7 @@ class MainActivity : Activity() {
                     try { store.replacePreparedBackup(prepared); portfolio = prepared.portfolio }
                     finally { importing = false }
                     group = null; holdingPage = 0
-                    indices = indices.filter { it.code in portfolio.settings.indexCodes }
-                    store.putCache("indices", encodeIndices(indices)); toast("备份恢复完成"); recreate()
+                    toast("备份恢复完成"); recreate()
                 } }.show()
         }
     }
