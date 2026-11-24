@@ -6,7 +6,9 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.myfunds.core.*
 
-class LocalStore(context: Context, name: String = "portfolio.db") : SQLiteOpenHelper(context, name, null, 1) {
+class LocalStore(context: Context, name: String = "portfolio.db") : SQLiteOpenHelper(context, name, null, 1), java.io.Closeable {
+    // Older Android SQLiteOpenHelper has close() but does not implement AutoCloseable.
+    override fun close() { super.close() }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE state (key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         db.execSQL("CREATE TABLE quotes (code TEXT PRIMARY KEY, payload TEXT NOT NULL)")

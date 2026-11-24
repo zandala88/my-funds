@@ -13,8 +13,8 @@ android {
         applicationId = "com.myfunds.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.4.0"
         testInstrumentationRunner = "com.myfunds.android.LocalStoreInstrumentation"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -35,12 +35,15 @@ android {
             if (signingFile.exists()) signingConfig = signingConfigs.getByName("localRelease")
         }
     }
+    testOptions { unitTests.isIncludeAndroidResources = true }
     lint { abortOnError = true }
     sourceSets.getByName("androidTest").assets.srcDir("../core/src/test/resources/ocr")
     packaging { jniLibs { useLegacyPackaging = true } }
     splits { abi { isEnable = true; reset(); include("arm64-v8a", "armeabi-v7a", "x86_64", "x86"); isUniversalApk = true } }
 }
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     implementation(project(":core"))
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 }

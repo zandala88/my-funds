@@ -1,9 +1,49 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#237C66</item>
+        <item name="android:colorAccent">#4F46E5</item>
+        <item name="android:colorBackground">#FFFFFF</item>
+        <item name="android:textColorPrimary">#0F172A</item>
+        <item name="android:textColorSecondary">#64748B</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowBackground">#F6F7F3</item>
+        <item name="android:windowBackground">#F1F5F9</item>
+        <item name="android:alertDialogTheme">@style/RoundedAlert</item>
+        <item name="android:datePickerDialogTheme">@style/RoundedDate</item>
+    </style>
+    <style name="AppTheme.Dark" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#818CF8</item>
+        <item name="android:colorBackground">#1E293B</item>
+        <item name="android:textColorPrimary">#F8FAFC</item>
+        <item name="android:textColorSecondary">#94A3B8</item>
+        <item name="android:windowBackground">#0F172A</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/RoundedAlertDark</item>
+        <item name="android:datePickerDialogTheme">@style/RoundedDateDark</item>
+    </style>
+    <style name="RoundedAlert" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">#4F46E5</item>
+        <item name="android:colorBackground">#FFFFFF</item>
+        <item name="android:textColorPrimary">#0F172A</item>
+        <item name="android:textColorSecondary">#64748B</item>
+        <item name="android:windowMinWidthMajor">88%</item>
+        <item name="android:windowMinWidthMinor">94%</item>
+    </style>
+    <style name="RoundedAlertDark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#818CF8</item>
+        <item name="android:colorBackground">#1E293B</item>
+        <item name="android:textColorPrimary">#F8FAFC</item>
+        <item name="android:textColorSecondary">#94A3B8</item>
+        <item name="android:windowMinWidthMajor">88%</item>
+        <item name="android:windowMinWidthMinor">94%</item>
+    </style>
+    <style name="RoundedDate" parent="RoundedAlert"><item name="android:datePickerStyle">@style/DatePickerLight</item></style>
+    <style name="RoundedDateDark" parent="RoundedAlertDark"><item name="android:datePickerStyle">@style/DatePickerDark</item></style>
+    <style name="DatePickerLight" parent="android:style/Widget.Material.Light.DatePicker">
+        <item name="android:datePickerMode">calendar</item>
+    </style>
+    <style name="DatePickerDark" parent="android:style/Widget.Material.DatePicker">
+        <item name="android:datePickerMode">calendar</item>
     </style>
 </resources>
