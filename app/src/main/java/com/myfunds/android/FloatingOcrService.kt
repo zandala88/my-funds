@@ -21,7 +21,10 @@ import com.myfunds.core.*
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class FloatingOcrService : Service() {
     companion object {
@@ -34,6 +37,8 @@ class FloatingOcrService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var windowParams: WindowManager.LayoutParams? = null
+
     private var rootView: LinearLayout? = null
     private var bubbleView: LinearLayout? = null
     private var cardView: LinearLayout? = null
@@ -45,6 +50,10 @@ class FloatingOcrService : Service() {
 
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
+
+    private val isCapturing = AtomicBoolean(false)
     private var isRecognizing = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -52,6 +61,8 @@ class FloatingOcrService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        backgroundThread = HandlerThread("FloatingCapture").apply { start() }
+        backgroundHandler = Handler(backgroundThread!!.looper)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -150,7 +161,18 @@ class FloatingOcrService : Service() {
         screenHeight = metrics.heightPixels
         screenDensity = metrics.densityDpi
 
-        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 3).apply {
+            setOnImageAvailableListener({ reader ->
+                // Drain old images when not capturing to keep the buffer clean
+                if (!isCapturing.get()) {
+                    try {
+                        val img = reader.acquireLatestImage()
+                        img?.close()
+                    } catch (e: Exception) { }
+                }
+            }, backgroundHandler)
+        }
+
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "FloatingOcrVirtualDisplay",
             screenWidth,
@@ -192,6 +214,7 @@ class FloatingOcrService : Service() {
             x = dp(20)
             y = dp(220)
         }
+        windowParams = params
 
         rootView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -214,46 +237,16 @@ class FloatingOcrService : Service() {
             addView(bubbleText)
         }
 
-        // Drag & Click listener
-        bubbleView?.setOnTouchListener(object : View.OnTouchListener {
-            private var initialX = 0
-            private var initialY = 0
-            private var initialTouchX = 0f
-            private var initialTouchY = 0f
-
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        return true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - initialTouchX).toInt()
-                        params.y = initialY + (event.rawY - initialTouchY).toInt()
-                        windowManager?.updateViewLayout(rootView, params)
-                        return true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        val dx = kotlin.math.abs(event.rawX - initialTouchX)
-                        val dy = kotlin.math.abs(event.rawY - initialTouchY)
-                        if (dx < dp(8) && dy < dp(8)) {
-                            if (!isRecognizing) triggerRecognition()
-                        }
-                        return true
-                    }
-                }
-                return false
-            }
-        })
+        // Attach drag listener to bubble
+        attachDragListener(bubbleView!!) {
+            if (!isRecognizing) triggerRecognition()
+        }
 
         // 2. Result Card Container (Initially GONE)
         cardView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(16), dp(10), dp(16), dp(14))
             background = shape(Color.parseColor("#0F172A"), 18, Color.parseColor("#4F46E5"), 2)
             elevation = dp(12).toFloat()
             layoutParams = LinearLayout.LayoutParams(dp(290), -2)
@@ -265,94 +258,167 @@ class FloatingOcrService : Service() {
         windowManager?.addView(rootView, params)
     }
 
+    private fun attachDragListener(view: View, onClick: (() -> Unit)? = null) {
+        view.setOnTouchListener(object : View.OnTouchListener {
+            private var initialX = 0
+            private var initialY = 0
+            private var initialTouchX = 0f
+            private var initialTouchY = 0f
+
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                val p = windowParams ?: return false
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialX = p.x
+                        initialY = p.y
+                        initialTouchX = event.rawX
+                        initialTouchY = event.rawY
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        p.x = (initialX + (event.rawX - initialTouchX)).toInt().coerceIn(0, maxOf(0, screenWidth - dp(50)))
+                        p.y = (initialY + (event.rawY - initialTouchY)).toInt().coerceIn(0, maxOf(0, screenHeight - dp(50)))
+                        windowManager?.updateViewLayout(rootView, p)
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val dx = kotlin.math.abs(event.rawX - initialTouchX)
+                        val dy = kotlin.math.abs(event.rawY - initialTouchY)
+                        if (dx < dp(8) && dy < dp(8)) {
+                            onClick?.invoke()
+                        }
+                        return true
+                    }
+                }
+                return false
+            }
+        })
+    }
+
     private fun triggerRecognition() {
+        if (isRecognizing) return
         isRecognizing = true
         bubbleText?.text = "正在识别中…"
 
-        // Temporarily hide bubble to avoid capturing it in screenshot
-        bubbleView?.visibility = View.INVISIBLE
+        // Hide overlay so it does NOT appear in screenshot
+        rootView?.visibility = View.GONE
 
+        // Give WindowManager & SurfaceFlinger time to refresh the screen without floating view
         mainHandler.postDelayed({
-            captureScreenAndParse()
-        }, 120)
-    }
-
-    private fun captureScreenAndParse() {
-        val reader = imageReader
-        if (reader == null) {
-            resetBubble("未能获取截屏器")
-            return
-        }
-
-        val image = try {
-            reader.acquireLatestImage()
-        } catch (e: Exception) {
-            null
-        }
-
-        bubbleView?.visibility = View.VISIBLE
-
-        if (image == null) {
-            resetBubble("未捕获到屏幕内容，请再试一次")
-            return
-        }
-
-        executor.submit {
-            try {
-                val plane = image.planes[0]
-                val buffer = plane.buffer
-                val pixelStride = plane.pixelStride
-                val rowStride = plane.rowStride
-                val rowPadding = rowStride - pixelStride * screenWidth
-
-                val rawBitmap = Bitmap.createBitmap(
-                    screenWidth + rowPadding / pixelStride,
-                    screenHeight,
-                    Bitmap.Config.ARGB_8888
-                )
-                rawBitmap.copyPixelsFromBuffer(buffer)
-                image.close()
-
-                val cleanBitmap = if (rowPadding > 0) {
-                    val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, screenWidth, screenHeight)
-                    rawBitmap.recycle()
-                    cropped
-                } else {
-                    rawBitmap
+            executor.submit {
+                val bitmap = acquireScreenBitmap(1500)
+                mainHandler.post {
+                    rootView?.visibility = View.VISIBLE
                 }
-
-                // Recognize with OfflineOcr
-                val lines = OfflineOcr(applicationContext).recognize(cleanBitmap)
-                cleanBitmap.recycle()
-
-                val candidates = HoldingsOcr.parse(lines)
-                if (candidates.isEmpty()) {
+                if (bitmap == null) {
                     mainHandler.post {
-                        resetBubble("未在当前页面识别到基金持仓")
-                        Toast.makeText(applicationContext, "未识别到基金。请在支付宝打开“资产详情”或“持有明细”页面后点击识别", Toast.LENGTH_LONG).show()
+                        resetBubble("未捕获到屏幕，请重试")
                     }
                     return@submit
                 }
+                processScreenBitmap(bitmap)
+            }
+        }, 180)
+    }
 
-                var candidate = candidates.first()
-                if (candidate.code != null) {
-                    // Try to resolve official fund name
-                    runCatching {
-                        val quote = MarketClient().quotes(listOf(candidate.code!!)).firstOrNull()
-                        if (quote?.name != null && quote.name.isNotBlank()) {
-                            candidate = candidate.copy(name = quote.name)
-                        }
+    private fun acquireScreenBitmap(timeoutMs: Long): Bitmap? {
+        val reader = imageReader ?: return null
+        isCapturing.set(true)
+
+        // Drain any stale image first
+        while (true) {
+            val old = try { reader.acquireLatestImage() } catch (e: Exception) { null } ?: break
+            old.close()
+        }
+
+        val latch = CountDownLatch(1)
+        var capturedImage: android.media.Image? = null
+
+        reader.setOnImageAvailableListener({ r ->
+            try {
+                val img = r.acquireLatestImage()
+                if (img != null && capturedImage == null) {
+                    capturedImage = img
+                    latch.countDown()
+                } else {
+                    img?.close()
+                }
+            } catch (e: Exception) { }
+        }, backgroundHandler)
+
+        // Wait up to timeoutMs for the fresh image
+        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        reader.setOnImageAvailableListener(null, null)
+        isCapturing.set(false)
+
+        val image = capturedImage ?: run {
+            try { reader.acquireLatestImage() } catch (e: Exception) { null }
+        } ?: return null
+
+        try {
+            val plane = image.planes[0]
+            val buffer = plane.buffer
+            buffer.rewind()
+
+            val pixelStride = plane.pixelStride
+            val rowStride = plane.rowStride
+            val rowPadding = rowStride - pixelStride * screenWidth
+
+            val rawBitmap = Bitmap.createBitmap(
+                screenWidth + rowPadding / pixelStride,
+                screenHeight,
+                Bitmap.Config.ARGB_8888
+            )
+            rawBitmap.copyPixelsFromBuffer(buffer)
+
+            val cleanBitmap = if (rowPadding > 0) {
+                val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, screenWidth, screenHeight)
+                rawBitmap.recycle()
+                cropped
+            } else {
+                rawBitmap
+            }
+            return cleanBitmap
+        } catch (e: Exception) {
+            return null
+        } finally {
+            image.close()
+        }
+    }
+
+    private fun processScreenBitmap(bitmap: Bitmap) {
+        try {
+            // Recognize using OfflineOcr
+            val lines = OfflineOcr(applicationContext).recognize(bitmap)
+            bitmap.recycle()
+
+            val candidates = HoldingsOcr.parse(lines)
+            if (candidates.isEmpty()) {
+                mainHandler.post {
+                    resetBubble("未识别到基金")
+                    Toast.makeText(applicationContext, "未能识别到基金。请确保屏幕完整显示基金名称、金额与份额后重试", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+
+            // Prefer candidate with code or shares
+            var candidate = candidates.firstOrNull { it.code != null || it.shares != null } ?: candidates.first()
+            if (candidate.code != null) {
+                runCatching {
+                    val quote = MarketClient().quotes(listOf(candidate.code!!)).firstOrNull()
+                    if (quote?.name != null && quote.name.isNotBlank()) {
+                        candidate = candidate.copy(name = quote.name)
                     }
                 }
+            }
 
-                mainHandler.post {
-                    showResultCard(candidate)
-                }
-            } catch (e: Exception) {
-                mainHandler.post {
-                    resetBubble("识别出错，请重试")
-                    Toast.makeText(applicationContext, e.message ?: "识别失败", Toast.LENGTH_SHORT).show()
-                }
+            mainHandler.post {
+                showResultCard(candidate)
+            }
+        } catch (e: Exception) {
+            mainHandler.post {
+                resetBubble("识别出错，请重试")
+                Toast.makeText(applicationContext, e.message ?: "识别失败", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -365,7 +431,23 @@ class FloatingOcrService : Service() {
 
         val card = cardView ?: return
 
-        // 1. Header: Name & Code
+        // 1. Top Drag Handle Bar (Allows user to drag card anywhere)
+        val dragHandle = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, dp(8))
+            val bar = TextView(this@FloatingOcrService).apply {
+                text = "━━━ 按住拖动 ━━━"
+                textSize = 10f
+                setTextColor(Color.parseColor("#64748B"))
+                gravity = Gravity.CENTER
+            }
+            addView(bar)
+        }
+        attachDragListener(dragHandle)
+        card.addView(dragHandle)
+
+        // 2. Header: Name & Code
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@FloatingOcrService).apply {
@@ -382,15 +464,16 @@ class FloatingOcrService : Service() {
             }
             addView(codeBadge)
         }
+        attachDragListener(header)
         card.addView(header)
 
-        // 2. Metrics Block
+        // 3. Metrics Block
         val metricBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = shape(Color.parseColor("#1E293B"), 12, Color.parseColor("#334155"), 1)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = dp(8)
+                topMargin = dp(6)
                 bottomMargin = dp(10)
             }
 
@@ -420,9 +503,10 @@ class FloatingOcrService : Service() {
             if (pft != null) statRow("持有收益", "${if (pft > BigDecimal.ZERO) "+" else ""}${pft.stripTrailingZeros().toPlainString()} 元")
             statRow("净值日期", c.confirmedDate ?: todayStr())
         }
+        attachDragListener(metricBox)
         card.addView(metricBox)
 
-        // 3. Action Buttons
+        // 4. Action Buttons
         val btnSave = Button(this).apply {
             text = "✓ 存入持仓与自选"
             textSize = 13f
@@ -531,6 +615,7 @@ class FloatingOcrService : Service() {
 
     override fun onDestroy() {
         executor.shutdownNow()
+        backgroundThread?.quitSafely()
         virtualDisplay?.release()
         imageReader?.close()
         mediaProjection?.stop()

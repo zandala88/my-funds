@@ -108,22 +108,41 @@ class OfflineOcr(private val context: Context) {
         } }
         val tess = TessBaseAPI()
         val lines = mutableListOf<OcrLine>()
+        fun readTile(tile: Bitmap, offset: Int) {
+            tess.setImage(tile)
+            tess.getUTF8Text()
+            val iterator = tess.resultIterator ?: return
+            try {
+                iterator.begin()
+                do {
+                    val text = iterator.getUTF8Text(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)?.trim().orEmpty()
+                    val box = iterator.getBoundingBox(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
+                    if (text.isNotBlank() && box.size == 4) lines.add(OcrLine(text, box[0], box[1] + offset, box[2], box[3] + offset))
+                } while (iterator.next(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE))
+            } finally { iterator.delete() }
+            tess.clear()
+        }
         try {
             check(tess.init(dataDir.absolutePath, "chi_sim", TessBaseAPI.OEM_LSTM_ONLY)) { "中文识别模型初始化失败" }
             tess.pageSegMode = TessBaseAPI.PageSegMode.PSM_AUTO
             tess.setVariable("preserve_interword_spaces", "1")
-            tess.setImage(bitmap)
-            tess.getUTF8Text()
-            val iterator = tess.resultIterator
-            if (iterator != null) {
-                try {
-                    iterator.begin()
-                    do {
-                        val text = iterator.getUTF8Text(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)?.trim().orEmpty()
-                        val box = iterator.getBoundingBox(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
-                        if (text.isNotBlank() && box.size == 4) lines.add(OcrLine(text, box[0], box[1], box[2], box[3]))
-                    } while (iterator.next(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE))
-                } finally { iterator.delete() }
+            if (bitmap.height <= 1800) {
+                readTile(bitmap, 0)
+            } else {
+                val tileHeight = 1600
+                val step = 1350
+                var top = 0
+                while (top < bitmap.height) {
+                    val h = minOf(tileHeight, bitmap.height - top)
+                    val tile = Bitmap.createBitmap(bitmap, 0, top, bitmap.width, h)
+                    try {
+                        readTile(tile, top)
+                    } finally {
+                        if (tile !== bitmap) tile.recycle()
+                    }
+                    if (top + h >= bitmap.height) break
+                    top += step
+                }
             }
             return lines.distinctBy { it.text to (it.top / 16) }.sortedWith(compareBy<OcrLine> { it.top }.thenBy { it.left })
         } finally {
