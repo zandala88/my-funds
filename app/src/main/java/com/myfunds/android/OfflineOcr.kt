@@ -96,4 +96,38 @@ class OfflineOcr(private val context: Context) {
             return lines.distinctBy { it.text to (it.top / 16) }.sortedWith(compareBy<OcrLine> { it.top }.thenBy { it.left })
         } finally { tess.recycle() }
     }
+
+    fun recognize(bitmap: Bitmap): List<OcrLine> {
+        val dataDir = File(context.filesDir, "ocr")
+        val dataFile = File(dataDir, "tessdata/chi_sim.traineddata")
+        fun sha(file: File): String { val digest = MessageDigest.getInstance("SHA-256"); file.inputStream().use { input -> val buffer = ByteArray(16384); while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) } }; return digest.digest().joinToString("") { "%02x".format(it) } }
+        synchronized(modelLock) { if (!dataFile.isFile || sha(dataFile) != MODEL_SHA) {
+            dataFile.parentFile!!.mkdirs(); val pending = File(dataFile.parentFile, "chi_sim.pending")
+            try { context.assets.open("tessdata/chi_sim.traineddata").use { input -> pending.outputStream().use { input.copyTo(it) } }; check(sha(pending) == MODEL_SHA) { "本机识别模型损坏，请重新安装应用" }; check(pending.renameTo(dataFile)) { "无法准备本机识别模型" } }
+            finally { pending.delete() }
+        } }
+        val tess = TessBaseAPI()
+        val lines = mutableListOf<OcrLine>()
+        try {
+            check(tess.init(dataDir.absolutePath, "chi_sim", TessBaseAPI.OEM_LSTM_ONLY)) { "中文识别模型初始化失败" }
+            tess.pageSegMode = TessBaseAPI.PageSegMode.PSM_AUTO
+            tess.setVariable("preserve_interword_spaces", "1")
+            tess.setImage(bitmap)
+            tess.getUTF8Text()
+            val iterator = tess.resultIterator
+            if (iterator != null) {
+                try {
+                    iterator.begin()
+                    do {
+                        val text = iterator.getUTF8Text(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)?.trim().orEmpty()
+                        val box = iterator.getBoundingBox(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
+                        if (text.isNotBlank() && box.size == 4) lines.add(OcrLine(text, box[0], box[1], box[2], box[3]))
+                    } while (iterator.next(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE))
+                } finally { iterator.delete() }
+            }
+            return lines.distinctBy { it.text to (it.top / 16) }.sortedWith(compareBy<OcrLine> { it.top }.thenBy { it.left })
+        } finally {
+            tess.recycle()
+        }
+    }
 }

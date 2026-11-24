@@ -195,4 +195,35 @@ class HoldingsOcrTest {
         assertEquals(listOf(d("100"), d("200")), rows.map { it.shares })
         assertEquals("招商中证白酒指数A", rows.last().name)
     }
+    @Test fun realAlipayMorganScreenshot() {
+        val lines = listOf(
+            OcrLine("18:58 口 刚 庐 江", 24, 19, 338, 33),
+            OcrLine("《 资产 详情", 16, 69, 124, 88),
+            OcrLine("摩根 标 普 500 指 数 (QDIDA", 31, 147, 256, 166),
+            OcrLine("017641 下 高 队 详情", 31, 180, 436, 198),
+            OcrLine("金额 元 )", 206, 248, 261, 261),
+            OcrLine("昨日 收益 (元 )@ 持 有 收益 (元 )@O 持 有 收益 率 @", 35, 347, 428, 362),
+            OcrLine("-32.17 -93.07 -9.04%", 58, 373, 411, 388),
+            OcrLine("持 有 金额 936.93 待 确认 金额 20.00", 29, 451, 371, 465),
+            OcrLine("持仓 成 本 价 1.6886 持 有 份额 609.98", 29, 484, 363, 498),
+            OcrLine("基金 净值 1.5360(11-20)", 247, 517, 412, 531),
+            OcrLine("加 四", 80, 564, 244, 585),
+            OcrLine("收益 明细 交易 记录 我 的 定投 (1)", 57, 593, 422, 608),
+            OcrLine("预计 11.26 日 星期 四 确认 份额", 196, 645, 384, 659),
+            OcrLine("\"定投 /10.00 元 预计 11.25 日 星期 三 确认 份额", 34, 695, 384, 709),
+            OcrLine("累计 盈亏 业绩 走势", 49, 756, 272, 774),
+            OcrLine("累计 收益", 48, 806, 106, 819),
+            OcrLine("-93.05", 48, 829, 89, 840)
+        )
+        val rows = HoldingsOcr.parse(lines)
+        assertEquals(1, rows.size)
+        val row = rows.single()
+        assertEquals("摩根标普500指数(QDII)A", row.name)
+        assertEquals("017641", row.code)
+        assertEquals(d("609.98"), row.shares)
+        assertEquals(d("1.6886"), row.cost)
+        assertEquals(d("936.93"), row.amount)
+        assertEquals("2026-11-20", row.confirmedDate)
+        assertTrue(row.issues.isEmpty())
+    }
 }

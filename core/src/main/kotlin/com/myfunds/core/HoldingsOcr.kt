@@ -12,7 +12,7 @@ object HoldingsOcr {
     private val codeLabel = Regex("(?:基金代码|代码)[:：\\s]*([0-9]{6})(?![0-9])")
     private val numberPattern = Regex("^[￥¥]?\\s*([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]+)?)(?:\\s*[份元])?$")
     private val labels = linkedMapOf(
-        "持有总份额" to "shares", "持有份额" to "shares", "确认份额" to "shares", "份额" to "shares",
+        "持有总份额" to "shares", "持有份额" to "shares", "已确认份额" to "shares", "确认持有份额" to "shares", "确认份额（份）" to "shares", "份额" to "shares",
         "平均成本" to "cost", "持仓成本价" to "cost", "单位成本" to "cost", "成本净值" to "cost", "成本价" to "cost",
         "持有金额" to "amount", "持仓金额" to "amount", "持仓市值" to "amount", "金额" to "amount",
         "持有收益" to "profit", "持仓收益" to "profit")
@@ -63,13 +63,14 @@ object HoldingsOcr {
             }
             // Badges can themselves contain “指数基金”, but are metadata for the preceding
             // name. Read a six-digit code here without opening another fund candidate.
-            val badgeStart = Regex("(?:中高|中低|高|中|低)风险|金选").find(text)?.range?.first
+            val badgeStart = Regex("(?:中高|中低|高|中|低)(?:风险|队)|金选").find(text)?.range?.first
             val nameBeforeBadge = badgeStart?.let { cleanName(codePattern.replace(text.take(it), "")) }
             if (badgeStart != null && !isFundName(nameBeforeBadge.orEmpty())) {
                 if (draft != null && draft!!.code == null) draft!!.code = codePattern.find(text)?.value
                 pending = null; continue
             }
-            if (Regex("^(?:预计|待确认金额|待确认份额|基金净值|单位净值|净值|收益明细|交易记录|我的定投)").containsMatchIn(text)) {
+            if (Regex("^(?:预计|待确认金额|待确认份额|基金净值|单位净值|净值|收益明细|交易记录|我的定投|[•·]?\\s*定投/)").containsMatchIn(text) ||
+                (text.contains("预计") && text.contains("确认份额"))) {
                 navDatePattern.find(text)?.groupValues?.get(1)?.let { date ->
                     if (draft?.date == null) draft?.date = parseDate(date)
                 }
@@ -121,7 +122,7 @@ object HoldingsOcr {
                     val nextMetric = metrics.getOrNull(i + 1)?.range?.first ?: text.length
                     val pendingStart = text.indexOf("待确认", match.range.last + 1).takeIf { it >= 0 } ?: text.length
                     val end = minOf(nextMetric, pendingStart)
-                    val span = text.substring(match.range.last + 1, end).replace(Regex("[（(](元|份)[）)]|[①②③④⑤⑥⑦⑧⑨⑩ⓘ?]"), "").trim().trimStart(':', '：').trim()
+                    val span = text.substring(match.range.last + 1, end).replace(Regex("[（(]?(?:元|份)[）)]?|[①②③④⑤⑥⑦⑧⑨⑩ⓘ?]"), "").trim().trimStart(':', '：').trim()
                     val value = parseNumber(span)
                     if (value != null && (key in listOf("profit", "amount") || value.signum() >= 0)) current.values[key] = value
                     else if (metrics.size == 1 && span.isBlank()) pending = key
@@ -136,11 +137,18 @@ object HoldingsOcr {
     private fun String.substringBeforeMetric(index: Int?) = if (index == null) this else substring(0, index)
     private fun normalize(text: String): String = text.replace('−', '-').replace('，', ',').replace('．', '.').replace('：', ':')
         .replace(Regex("(?<=[\u4e00-\u9fff])\\s+(?=[\u4e00-\u9fff])"), "").replace("持有人金额", "持有金额").trim()
-    private fun cleanName(text: String) = text.replace(Regex("^(?:基金名称|基金简称)[:：\\s]*"), "")
-        .replace(Regex("\\s+[+\\-￥¥]?[0-9][0-9,]*\\.[0-9]+.*$"), "").replace(Regex("\\s+"), "").trim(':', '：', '-', ' ')
+    private fun cleanName(text: String) = text.replace(Regex("^(?:[<《]\\s*)?(?:资产详情|基金名称|基金简称)[:：\\s]*"), "")
+        .replace(Regex("\\s+[+\\-￥¥]?[0-9][0-9,]*\\.[0-9]+.*$"), "")
+        .replace(Regex("\\s+"), "")
+        .replace(Regex("[（(]QDIDA$"), "(QDII)A")
+        .replace(Regex("[（(]QDID$"), "(QDII)")
+        .replace(Regex("[（(]QD11"), "(QDII")
+        .trim(':', '：', '-', ' ', '<', '《')
     private fun isFundName(text: String): Boolean {
         if (text.length !in 3..120 || text.count { it in '\u4e00'..'\u9fff' } < 2) return false
-        if (Regex("^(我的基金|基金总|基金资产|基金账户|基金经理|基金详情|基金档案|基金持仓|持仓明细|总金额|总资产|昨日收益|累计收益|持有收益|持有份额|单位净值|成本金额)").containsMatchIn(text)) return false
+        if (Regex("^(我的基金|基金总|基金资产|基金账户|基金经理|基金详情|基金档案|基金持仓|持仓明细|总金额|总资产|昨日收益|累计收益|持有收益|持有份额|单位净值|成本金额|资产详情)").containsMatchIn(text)) return false
+        if (Regex("^(?:金选)?(?:指数|股票|混合|债券|货币|QDII|ETF|LOF)?(?:型)?(?:基金)?(?:详情)?$").matches(text)) return false
+        if (Regex("^(?:中高|中低|高|中|低)?(?:风险|队)$").matches(text)) return false
         return Regex("基金|混合|指数|债券|股票|联接|ETF|LOF|货币|养老|增强|成长|精选|稳健|中证|沪深").containsMatchIn(text)
     }
     private fun parseNumber(raw: String): BigDecimal? {

@@ -4,9 +4,13 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.*
@@ -117,6 +121,13 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         checkAndApplyDca()
+        safe {
+            val fresh = store.load()
+            if (fresh != portfolio) {
+                portfolio = fresh
+                render()
+            }
+        }
         val raw = pendingScreenshotRows ?: return
         pendingScreenshotRows = null
         safe {
@@ -302,6 +313,7 @@ class MainActivity : Activity() {
         val groupName = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
         val actions: List<Pair<String, () -> Unit>> = listOf(
             "＋ 添加自选" to { searchDialog() },
+            "⚡ 悬浮识图" to { startFloatingOcr() },
             "截图导入" to { startActivityForResult(Intent(this, OcrImportActivity::class.java), 102) },
             "$groupName ▾" to { chooseGroup() }, "排序 ▾" to { sortDialog() })
         actions.chunked(if (ui.context.resources.configuration.screenWidthDp / ui.scale < 440f) 2 else 4).forEach { row ->
@@ -949,6 +961,27 @@ class MainActivity : Activity() {
             })
         })
     }
+    private fun startFloatingOcr() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            ui.dialog().setTitle("开启悬浮窗权限")
+                .setMessage("开启悬浮窗权限后，可以在支付宝或天天基金页面上直接一键识别持仓，免去截图麻烦。")
+                .setPositiveButton("去开启") { _, _ ->
+                    runCatching {
+                        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                        startActivity(intent)
+                    }
+                }
+                .setNegativeButton("取消", null)
+                .show()
+            return
+        }
+        val mpm = getSystemService(MediaProjectionManager::class.java)
+        if (mpm == null) {
+            toast("系统不支持屏幕录制")
+            return
+        }
+        startActivityForResult(mpm.createScreenCaptureIntent(), 105)
+    }
     private fun pickDocument(export: Boolean) = safe {
         check(!importing) { "正在处理备份，请稍候" }
         val intent = Intent(if (export) Intent.ACTION_CREATE_DOCUMENT else Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -961,6 +994,24 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 102 && resultCode == RESULT_OK) { pendingScreenshotRows = data?.getStringExtra("reviewedRows"); return }
+        if (requestCode == 105) {
+            if (resultCode == RESULT_OK && data != null) {
+                val intent = Intent(this, FloatingOcrService::class.java).apply {
+                    putExtra("resultCode", resultCode)
+                    putExtra("resultData", data)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+                moveTaskToBack(true)
+                toast("悬浮识图已开启！请打开支付宝持仓页面点击悬浮球")
+            } else {
+                toast("未开启截屏权限，无法使用悬浮识图")
+            }
+            return
+        }
         if (resultCode != RESULT_OK || data?.data == null) return
         val uri = data.data!!
         if (requestCode == 100) safe {

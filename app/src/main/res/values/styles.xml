@@ -23,6 +23,7 @@
         <item name="android:datePickerDialogTheme">@style/RoundedDateDark</item>
     </style>
     <style name="RoundedAlert" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_background_light</item>
         <item name="android:colorAccent">#4F46E5</item>
         <item name="android:colorBackground">#FFFFFF</item>
         <item name="android:textColorPrimary">#0F172A</item>
@@ -31,6 +32,7 @@
         <item name="android:windowMinWidthMinor">94%</item>
     </style>
     <style name="RoundedAlertDark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_background_dark</item>
         <item name="android:colorAccent">#818CF8</item>
         <item name="android:colorBackground">#1E293B</item>
         <item name="android:textColorPrimary">#F8FAFC</item>

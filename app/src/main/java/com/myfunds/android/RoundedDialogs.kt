@@ -32,39 +32,57 @@ class RoundedDialogBuilder(private val ui: Ui) : AlertDialog.Builder(ui.dialogCo
 }
 
 fun Ui.prepareDialog(dialog: Dialog) {
-    val decor = dialog.window?.decorView ?: return
     fun style() {
         val window = dialog.window ?: return
-        window.setBackgroundDrawable(InsetDrawable(shape(card, 28), dp(12)))
-        // The platform panel otherwise paints its own square background over the window.
-        val panelId = context.resources.getIdentifier("parentPanel", "id", "android")
-        decor.findViewById<View>(panelId)?.apply {
-            background = shape(card, 28)
-            clipToOutline = true
+        window.setBackgroundDrawable(InsetDrawable(shape(card, 24, border, 1), dp(16)))
+        val decor = window.decorView
+        fun cleanBlackBackgrounds(view: View) {
+            val panelId = context.resources.getIdentifier("parentPanel", "id", "android")
+            if (view.id == panelId) {
+                view.background = shape(card, 24)
+                view.clipToOutline = true
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    cleanBlackBackgrounds(view.getChildAt(i))
+                }
+            }
         }
+        cleanBlackBackgrounds(decor)
         val titleId = context.resources.getIdentifier("alertTitle", "id", "android")
-        decor.findViewById<TextView>(titleId)?.apply { setTextColor(ink); textSize = 20f }
-        decor.findViewById<TextView>(android.R.id.message)?.apply { setTextColor(muted); textSize = 14f }
+        decor.findViewById<TextView>(titleId)?.apply {
+            setTextColor(ink); textSize = 18f; setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        decor.findViewById<TextView>(android.R.id.message)?.apply {
+            setTextColor(muted); textSize = 14f
+            setPadding(0, dp(4), 0, dp(4))
+        }
         if (dialog is AlertDialog) {
             listOf(DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE, DialogInterface.BUTTON_NEUTRAL).forEach { id ->
                 dialog.getButton(id)?.apply {
-                    // Pill backgrounds and extra margins must not participate in the platform's
-                    // text-baseline alignment, which can move the button above the bar.
                     (parent as? LinearLayout)?.isBaselineAligned = false
                     isAllCaps = false; textSize = 13f
-                    setTextColor(if (id == DialogInterface.BUTTON_POSITIVE) Color.WHITE else accent)
-                    background = shape(if (id == DialogInterface.BUTTON_POSITIVE) accent else soft, 22)
+                    val isPos = id == DialogInterface.BUTTON_POSITIVE
+                    setTextColor(if (isPos) Color.WHITE else if (id == DialogInterface.BUTTON_NEUTRAL) rose else accent)
+                    background = shape(if (isPos) accent else soft, 22)
                     minHeight = touchTarget; minimumHeight = touchTarget
-                    setPadding(dp(14), dp(8), dp(14), dp(8))
+                    setPadding(dp(16), dp(8), dp(16), dp(8))
                     (layoutParams as? LinearLayout.LayoutParams)?.apply {
                         setMargins(dp(4), dp(6), dp(4), dp(6)); layoutParams = this
                     }
                     stateListAnimator = null
                 }
             }
-            dialog.listView?.apply { divider = ColorDrawable(border); dividerHeight = dp(1); setBackgroundColor(card) }
+            dialog.listView?.apply {
+                divider = ColorDrawable(border)
+                dividerHeight = dp(1)
+                setBackgroundColor(card)
+            }
         }
     }
+    dialog.setOnShowListener { style() }
+    val decor = dialog.window?.decorView ?: return
     decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) { style() }
         override fun onViewDetachedFromWindow(v: View) = Unit
