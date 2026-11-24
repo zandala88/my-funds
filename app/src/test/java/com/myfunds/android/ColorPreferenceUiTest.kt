@@ -23,10 +23,8 @@ class ColorPreferenceUiTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         fun button(prefix: String) = views(activity.window.decorView).filterIsInstance<Button>().first { it.text.startsWith(prefix) }
-        val navigation = button("自选").parent as ViewGroup
-        assertNull("Bottom tabs should not have a background container", navigation.background)
-        assertEquals(2, navigation.childCount)
-        button("设置").performClick()
+        assertFalse(views(activity.window.decorView).filterIsInstance<Button>().any { it.text.toString() in listOf("自选", "设置") })
+        views(activity.window.decorView).first { it.contentDescription == "设置" }.performClick()
         button("涨跌配色：").performClick()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
         dialog.listView.performItemClick(dialog.listView.getChildAt(1), 1, 1)

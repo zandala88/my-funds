@@ -13,9 +13,11 @@ data class Holding(val id: String, val code: String, val name: String, val group
 data class Group(val id: String, val name: String)
 data class Trade(val id: String, val holdingId: String, val kind: String, val shares: BigDecimal,
     val price: BigDecimal, val fee: BigDecimal, val date: String, val realized: BigDecimal = BigDecimal.ZERO)
+enum class DisplaySize(val factor: Float) { SMALL(0.9f), STANDARD(1f), LARGE(1.15f) }
+
 data class AppSettings(val darkMode: Boolean = false, val autoRefresh: Boolean = false,
     val sort: String = "manual", val showShares: Boolean = true, val showCost: Boolean = true,
-    val indexCodes: List<String> = listOf("1.000001", "0.399001", "0.399006"), val redUp: Boolean = true)
+    val indexCodes: List<String> = listOf("1.000001", "0.399001", "0.399006"), val redUp: Boolean = true, val displaySize: DisplaySize = DisplaySize.STANDARD)
 data class Portfolio(val holdings: List<Holding> = emptyList(),
     val groups: List<Group> = listOf(Group("default", "默认分组")),
     val trades: List<Trade> = emptyList(), val settings: AppSettings = AppSettings()) {

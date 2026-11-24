@@ -1,5 +1,6 @@
 package com.myfunds.android
 
+import com.myfunds.core.DisplaySize
 import android.app.Activity
 import android.content.DialogInterface
 import android.graphics.Rect
@@ -18,10 +19,10 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28, 35], qualifiers = "w320dp-h480dp-mdpi")
 class DialogLayoutTest {
     @Test fun longContentLeavesCompleteActionButtonsVisibleInBothThemes() {
-        for (dark in listOf(false, true)) for (threeButtons in listOf(false, true)) {
+        for (dark in listOf(false, true)) for (threeButtons in listOf(false, true)) for (size in DisplaySize.entries) {
             val controller = Robolectric.buildActivity(Activity::class.java).setup()
             val activity = controller.get()
-            val ui = Ui(activity, dark)
+            val ui = Ui(activity, dark, displaySize = size)
             val content = ScrollView(activity).apply {
                 addView(ui.box().apply { repeat(60) { addView(ui.text("基金持仓与定投明细 $it", 18f)) } })
             }

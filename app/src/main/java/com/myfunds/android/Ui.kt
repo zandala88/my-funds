@@ -12,8 +12,17 @@ import android.widget.*
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-class Ui(val context: Context, val dark: Boolean, private val redUp: Boolean = true) {
-    val dialogContext = android.view.ContextThemeWrapper(context, if (dark) R.style.AppTheme_Dark else R.style.AppTheme)
+class Ui(baseContext: Context, val dark: Boolean, private val redUp: Boolean = true,
+    val displaySize: com.myfunds.core.DisplaySize = com.myfunds.core.DisplaySize.STANDARD) {
+    val scale = displaySize.factor
+    // Keep the Activity as the base so dialogs retain its window token. Only this
+    // wrapper's resources change; the system and other apps keep their font sizes.
+    val context = android.view.ContextThemeWrapper(baseContext, if (dark) R.style.AppTheme_Dark else R.style.AppTheme).apply {
+        applyOverrideConfiguration(android.content.res.Configuration(baseContext.resources.configuration).apply { fontScale *= scale })
+    }
+    val dialogContext = context
+    val compact get() = context.resources.configuration.screenWidthDp / scale < 400f
+    val touchTarget get() = maxOf(dp(48), (44 * context.resources.displayMetrics.density).toInt())
     fun dialog() = RoundedDialogBuilder(this)
     val background = Color.parseColor(if (dark) "#0F172A" else "#F1F5F9")
     val card = Color.parseColor(if (dark) "#1E293B" else "#FFFFFF")
@@ -24,7 +33,7 @@ class Ui(val context: Context, val dark: Boolean, private val redUp: Boolean = t
     val border = Color.parseColor(if (dark) "#334155" else "#CBD5E1")
     val green = Color.parseColor(if (dark) "#34D399" else "#059669")
     val rose = Color.parseColor(if (dark) "#FB7185" else "#E11D48")
-    fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
+    fun dp(v: Int) = kotlin.math.round(v * context.resources.displayMetrics.density * scale).toInt()
     fun box(vertical: Boolean = true) = LinearLayout(context).apply { orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
     fun text(value: String, size: Float = 14f, color: Int = ink, bold: Boolean = false) = TextView(context).apply {
         text = value; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
@@ -37,7 +46,7 @@ class Ui(val context: Context, val dark: Boolean, private val redUp: Boolean = t
     }
     fun button(value: String, primary: Boolean = false, action: () -> Unit) = Button(context).apply {
         text = value; isAllCaps = false; textSize = 13f; minWidth = 0; minimumWidth = 0
-        minHeight = dp(46); minimumHeight = dp(46); includeFontPadding = false
+        minHeight = touchTarget; minimumHeight = touchTarget; includeFontPadding = false
         setTextColor(if (primary) Color.WHITE else if (dark) Color.parseColor("#E2E8F0") else accent)
         val fill = if (primary) accent else soft
         background = InsetDrawable(RippleDrawable(ColorStateList.valueOf(if (dark) 0x33FFFFFF else 0x221B352A), shape(fill, 23), shape(Color.WHITE, 23)), dp(2), dp(2), dp(2), dp(2))
@@ -47,8 +56,9 @@ class Ui(val context: Context, val dark: Boolean, private val redUp: Boolean = t
     fun iconButton(resId: Int, contentDesc: String, action: () -> Unit) = ImageButton(context).apply {
         setImageResource(resId)
         contentDescription = contentDesc
-        scaleType = ImageView.ScaleType.CENTER_INSIDE
-        val size = dp(44)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        val size = touchTarget
         minimumWidth = size
         minimumHeight = size
         imageTintList = ColorStateList.valueOf(accent)
@@ -60,7 +70,7 @@ class Ui(val context: Context, val dark: Boolean, private val redUp: Boolean = t
     fun field(hintText: String, value: String = "", numeric: Boolean = false) = EditText(context).apply {
         hint = hintText; setText(value); textSize = 15f; setTextColor(ink); setHintTextColor(muted)
         setSingleLine(true)
-        background = shape(soft, 14, border, 1); setPadding(dp(14), dp(10), dp(14), dp(10)); minHeight = dp(46)
+        background = shape(soft, 14, border, 1); setPadding(dp(14), dp(10), dp(14), dp(10)); minHeight = touchTarget
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }
         if (numeric) inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
     }

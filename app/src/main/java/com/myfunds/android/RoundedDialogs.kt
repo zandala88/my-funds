@@ -54,7 +54,7 @@ fun Ui.prepareDialog(dialog: Dialog) {
                     isAllCaps = false; textSize = 13f
                     setTextColor(if (id == DialogInterface.BUTTON_POSITIVE) Color.WHITE else accent)
                     background = shape(if (id == DialogInterface.BUTTON_POSITIVE) accent else soft, 22)
-                    minHeight = dp(44); minimumHeight = dp(44)
+                    minHeight = touchTarget; minimumHeight = touchTarget
                     setPadding(dp(14), dp(8), dp(14), dp(8))
                     (layoutParams as? LinearLayout.LayoutParams)?.apply {
                         setMargins(dp(4), dp(6), dp(4), dp(6)); layoutParams = this

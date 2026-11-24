@@ -37,6 +37,8 @@ class MainActivity : Activity() {
     private var initialRequestDone = false
     private var holdingPage = 0
     private var scrollY = 0
+    private var homeScrollY = 0
+    private var backRegistration: Any? = null
     private var pendingScreenshotRows: String? = null
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newFixedThreadPool(2)
@@ -54,6 +56,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         tab = savedInstanceState?.getInt("selectedTab") ?: 0
         scrollY = savedInstanceState?.getInt("scrollY") ?: 0
+        homeScrollY = savedInstanceState?.getInt("homeScrollY") ?: 0
         pendingScreenshotRows = savedInstanceState?.getString("pendingScreenshotRows")
         store = LocalStore(this)
         try { portfolio = store.load(); quotes = store.loadQuotes() }
@@ -82,6 +85,7 @@ class MainActivity : Activity() {
         group?.let { outState.putString("selectedGroup", it) }
         outState.putInt("selectedTab", tab)
         outState.putInt("scrollY", scrollY)
+        outState.putInt("homeScrollY", homeScrollY)
         super.onSaveInstanceState(outState)
     }
     override fun onResume() {
@@ -106,7 +110,14 @@ class MainActivity : Activity() {
         networkJobs.forEach { it.cancel(true) }; networkJobs.clear(); client.cancelAll()
         super.onStop()
     }
-    override fun onDestroy() { handler.removeCallbacksAndMessages(null); client.cancelAll(); executor.shutdownNow(); if (::store.isInitialized) store.close(); super.onDestroy() }
+    override fun onDestroy() {
+        if (android.os.Build.VERSION.SDK_INT >= 33) backRegistration?.let { Api33Back.unregister(this, it) }
+        backRegistration = null
+        handler.removeCallbacksAndMessages(null)
+        client.cancelAll(); executor.shutdownNow()
+        if (::store.isInitialized) store.close()
+        super.onDestroy()
+    }
     private fun restartTimer() { handler.removeCallbacks(refreshLoop); if (active && portfolio.settings.autoRefresh) handler.postDelayed(refreshLoop, 60000) }
     private fun toast(message: String) = Toast.makeText(this, message.take(200), Toast.LENGTH_LONG).show()
     private fun safe(action: () -> Unit) { try { action() } catch (e: Exception) { toast(e.message ?: "操作未完成，原数据已保留") } }
@@ -143,7 +154,7 @@ class MainActivity : Activity() {
         }
     }
     private fun render() {
-        ui = Ui(this, portfolio.settings.darkMode, portfolio.settings.redUp)
+        ui = Ui(this, portfolio.settings.darkMode, portfolio.settings.redUp, portfolio.settings.displaySize)
         root = ui.box().apply { setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(8)); setBackgroundColor(ui.background) }
         window.statusBarColor = ui.background; window.navigationBarColor = ui.background
         window.decorView.systemUiVisibility = if (portfolio.settings.darkMode) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
@@ -161,7 +172,13 @@ class MainActivity : Activity() {
                     }
                     refreshBtn.startAnimation(anim)
                 }
-                addView(refreshBtn)
+                addView(refreshBtn, LinearLayout.LayoutParams(ui.touchTarget, ui.touchTarget))
+                addView(ui.iconButton(R.drawable.ic_settings, "设置") {
+                    homeScrollY = scrollY; tab = 1; scrollY = 0; render()
+                }, LinearLayout.LayoutParams(ui.touchTarget, ui.touchTarget))
+            } else {
+                addView(ui.iconButton(R.drawable.ic_arrow_back, "返回自选") { returnToHoldings() },
+                    LinearLayout.LayoutParams(ui.touchTarget, ui.touchTarget))
             }
         })
         root.addView(ui.text(if (tab == 0) status else "数据存在本机，换机用文件恢复", 12f, ui.muted).apply { maxLines = 2 })
@@ -169,13 +186,11 @@ class MainActivity : Activity() {
         val scroller = ScrollView(this).apply { isFillViewport = true; addView(body) }
         root.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
         if (tab == 0) holdingsPage() else settingsPage()
-        root.addView(ui.box(false).apply {
-            setPadding(0, ui.dp(3), 0, ui.dp(3))
-            listOf("自选", "设置").forEachIndexed { i, label ->
-                addView(ui.button(label, primary = i == tab) { tab = i; scrollY = 0; render() }, LinearLayout.LayoutParams(0, ui.dp(56), 1f))
-            }
-        })
         setContentView(root); root.requestApplyInsets()
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            if (tab == 1 && backRegistration == null) backRegistration = Api33Back.register(this)
+            if (tab == 0) { backRegistration?.let { Api33Back.unregister(this, it) }; backRegistration = null }
+        }
         val targetScrollY = scrollY
         if (targetScrollY > 0) {
             scroller.post { scroller.scrollTo(0, targetScrollY) }
@@ -184,6 +199,20 @@ class MainActivity : Activity() {
             scrollY = scroller.scrollY
         }
     }
+    @android.annotation.TargetApi(33)
+    private object Api33Back {
+        fun register(activity: MainActivity): Any {
+            val callback = android.window.OnBackInvokedCallback { activity.returnToHoldings() }
+            activity.onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
+            return callback
+        }
+        fun unregister(activity: MainActivity, callback: Any) {
+            activity.onBackInvokedDispatcher.unregisterOnBackInvokedCallback(callback as android.window.OnBackInvokedCallback)
+        }
+    }
+    private fun returnToHoldings() { tab = 0; scrollY = homeScrollY; render() }
+    @Deprecated("Compatible platform back navigation")
+    override fun onBackPressed() { if (tab == 1) returnToHoldings() else super.onBackPressed() }
     private fun holdingsPage() {
         val selected = portfolio.holdings.filter { group == null || it.groupId == group }
         val filtered = portfolio.copy(holdings = selected, trades = portfolio.trades.filter { t -> selected.any { it.id == t.holdingId } })
@@ -192,36 +221,38 @@ class MainActivity : Activity() {
         val dcaActiveCount = dcaBudget.plans
 
         // Bento Row 1: Top Asymmetric 2-Card Row
-        body.addView(ui.box(false).apply {
+        body.addView(ui.box(vertical = ui.compact).apply {
             // Left Card: Total Asset & Profit Overview
             val leftCard = ui.bentoCard().apply {
                 addView(ui.text("持仓总额（按公布净值）", 11f, ui.muted))
                 addView(ui.text(ui.amount(summary.marketValue), 28f, ui.ink, bold = true))
-                val profitRow = ui.box(false).apply {
-                    addView(ui.text("持有收益 ", 11f, ui.muted))
-                    addView(ui.text(ui.signed(summary.profit), 12f, ui.changeColor(summary.profit), bold = true))
-                    addView(ui.text("  ·  已实现 ", 11f, ui.muted))
-                    addView(ui.text(ui.signed(summary.realized), 12f, ui.changeColor(summary.realized), bold = true))
-                }
-                addView(profitRow)
+                addView(ui.text("持有收益 ${ui.signed(summary.profit)}", 12f, ui.changeColor(summary.profit), true))
+                addView(ui.text("已实现 ${ui.signed(summary.realized)}", 11f, ui.changeColor(summary.realized)))
                 if (summary.missing > 0) {
                     addView(ui.text("${summary.missing} 只暂无净值，显示以成本为准", 10f, ui.muted))
                 }
             }
-            addView(leftCard, LinearLayout.LayoutParams(0, -2, 1.6f).apply { marginEnd = ui.dp(8) })
+            addView(leftCard, if (ui.compact) LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) }
+                else LinearLayout.LayoutParams(0, -2, 1.6f).apply { marginEnd = ui.dp(8) })
 
             // Right Card: DCA Automatic Status
             val rightCard = ui.bentoCard().apply {
                 addView(ui.text("每日定投预计", 11f, ui.muted))
                 addView(ui.text("¥ ${ui.amount(dcaBudget.total)}", 22f, ui.accent, bold = true).apply {
                     maxLines = 1
-                    setAutoSizeTextTypeUniformWithConfiguration(12, 22, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+                    setAutoSizeTextTypeUniformWithConfiguration(16, 22, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
                 })
                 addView(ui.text("$dcaActiveCount 只 · 全部分组", 11f, ui.muted))
                 if (dcaBudget.missingPrices > 0) addView(ui.text("已知 ¥${ui.amount(dcaBudget.knownAmount)}\n${dcaBudget.missingPrices} 只待净值", 10f, ui.muted))
                 else addView(ui.text("按计划执行日计算", 10f, ui.muted))
+                addView(ui.text("查看计划 ›", 11f, ui.accent, true))
+                background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(ui.soft),
+                    ui.shape(ui.card, 20, ui.border, 1), ui.shape(Color.WHITE, 20))
+                isFocusable = true
+                contentDescription = "每日定投预计，${dcaBudget.plans} 只基金，点击查看定投计划"
+                setOnClickListener { showDcaPlans() }
             }
-            addView(rightCard, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(rightCard, if (ui.compact) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f))
         })
 
         // Bento Row 2: Status & Sync Pill Banner
@@ -233,15 +264,21 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8); bottomMargin = ui.dp(10) }
         })
 
-        // Bento Row 3: Action Buttons
-        body.addView(ui.box(false).apply {
-            addView(ui.button("＋ 添加自选", primary = true) { searchDialog() }, LinearLayout.LayoutParams(0, -2, 1.2f).apply { marginEnd = ui.dp(6) })
-            addView(ui.button("截图导入") { startActivityForResult(Intent(this@MainActivity, OcrImportActivity::class.java), 102) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
-            val groupName = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
-            addView(ui.button("$groupName ▾") { chooseGroup() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
-            addView(ui.button("排序 ▾") { sortDialog() }, LinearLayout.LayoutParams(0, -2, 0.9f))
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) }
-        })
+        val groupName = group?.let { id -> portfolio.groups.firstOrNull { it.id == id }?.name } ?: "全部基金"
+        val actions: List<Pair<String, () -> Unit>> = listOf(
+            "＋ 添加自选" to { searchDialog() },
+            "截图导入" to { startActivityForResult(Intent(this, OcrImportActivity::class.java), 102) },
+            "$groupName ▾" to { chooseGroup() }, "排序 ▾" to { sortDialog() })
+        actions.chunked(if (ui.compact) 2 else 4).forEach { row ->
+            body.addView(ui.box(false).apply {
+                row.forEachIndexed { index, (label, action) ->
+                    addView(ui.button(label, primary = label == "＋ 添加自选", action = action), LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        if (index < row.lastIndex) marginEnd = ui.dp(6)
+                    })
+                }
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) }
+            })
+        }
 
         val sorted = PortfolioMath.sorted(portfolio.copy(holdings = selected), quotes, today())
         holdingPage = holdingPage.coerceIn(0, ((sorted.size - 1).coerceAtLeast(0) / 50))
@@ -258,20 +295,20 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) }
 
                 // Top row: Name + Code Badge & Date
-                val topRow = ui.box(false).apply {
+                val topRow = ui.box(vertical = ui.compact).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     val nameBox = ui.box(false).apply {
                         gravity = Gravity.CENTER_VERTICAL
                         if (h.starred) addView(ui.text("★ ", 14f, Color.parseColor("#F59E0B"), bold = true))
                         addView(ui.text(h.name, 15f, ui.ink, bold = true).apply {
-                            maxLines = 1
+                            maxLines = if (ui.compact) 2 else 1
                             ellipsize = android.text.TextUtils.TruncateAt.END
                         }, LinearLayout.LayoutParams(0, -2, 1f))
                         addView(ui.badge(h.code, ui.accent).apply {
                             setPadding(ui.dp(6), ui.dp(1), ui.dp(6), ui.dp(1))
                         })
                     }
-                    addView(nameBox, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(nameBox, if (ui.compact) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f))
                     val dateStr = q?.date ?: (h.confirmedDate ?: "暂无日期")
                     addView(ui.text(dateStr, 11f, ui.muted))
                 }
@@ -304,7 +341,7 @@ class MainActivity : Activity() {
                 addView(metricBlock)
 
                 // Bottom row: DCA status badge on left, Profit & Rate on right
-                val bottomRow = ui.box(false).apply {
+                val bottomRow = ui.box(vertical = ui.compact).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     if (hasDca) {
                         val dcaText = if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "定投: 每日 ${h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: ""} 元"
@@ -317,12 +354,13 @@ class MainActivity : Activity() {
                         })
                     }
                     val profitView = ui.box(false).apply {
-                        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                        gravity = (if (ui.compact) Gravity.START else Gravity.END) or Gravity.CENTER_VERTICAL
                         val profitColor = ui.changeColor(profit)
                         addView(ui.text("收益 ", 11f, ui.muted))
                         addView(ui.text("${ui.signed(profit)} (${ui.signed(rate, "%")})", 12f, profitColor, bold = true))
                     }
-                    addView(profitView, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(profitView, if (ui.compact) LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) }
+                        else LinearLayout.LayoutParams(0, -2, 1f))
                 }
                 addView(bottomRow)
 
@@ -590,11 +628,39 @@ class MainActivity : Activity() {
             .setPositiveButton("管理持仓") { _, _ -> holdingActions(h) }
             .show()
     }
+    private fun showDcaPlans() {
+        val plans = portfolio.holdings.filter { (it.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (it.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO }
+        if (plans.isEmpty()) {
+            ui.dialog().setTitle("定投计划").setMessage("暂无定投计划。可在基金卡片中点击“设为定投”添加。")
+                .setPositiveButton("关闭", null).show()
+            return
+        }
+        val budget = DcaBudget.daily(plans, quotes)
+        val title = ui.box().apply {
+            setPadding(ui.dp(24), ui.dp(20), ui.dp(24), ui.dp(10))
+            addView(ui.text("定投计划", 20f, bold = true))
+            addView(ui.text("单日预计合计 ¥${ui.amount(budget.total)} · ${plans.size} 只 · 全部分组", 13f, ui.accent))
+            if (budget.missingPrices > 0) addView(ui.text("已知 ¥${ui.amount(budget.knownAmount)}，${budget.missingPrices} 只等待净值", 12f, ui.muted))
+            addView(ui.text("点击基金查看或修改计划", 12f, ui.muted))
+        }
+        val labels = plans.map { h ->
+            val shares = h.dcaShares?.takeIf { it > BigDecimal.ZERO }
+            val plan = if (shares != null) "每日 ${shares.stripTrailingZeros().toPlainString()} 份" else "每日 ${ui.amount(h.dcaAmount)} 元"
+            val frequency = if (h.dcaWeekdaysOnly) "周一至周五" else "每天"
+            val groupName = portfolio.groups.firstOrNull { it.id == h.groupId }?.name.orEmpty()
+            val amount = DcaBudget.daily(listOf(h), quotes)
+            "${h.name}\n${h.code} · $groupName\n$plan · $frequency\n单日预计 ¥${ui.amount(amount.total)}" +
+                if (amount.missingPrices > 0) " · 等待净值" else if (shares != null) " · 按最新净值估算" else ""
+        }
+        ui.dialog().setCustomTitle(title).setItems(labels.toTypedArray()) { _, index ->
+            portfolio.holdings.firstOrNull { it.id == plans[index].id }?.let { setupDcaDialog(it) }
+        }.setNegativeButton("关闭", null).show()
+    }
     private fun setupDcaDialog(h: Holding) {
         val box = ui.box().apply { setPadding(ui.dp(22), ui.dp(10), ui.dp(22), ui.dp(10)) }
         val sharesField = ui.field("每日定投份额 (份，如 10.00)", h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: "", true)
         val amountField = ui.field("或 每日定投金额 (元，按最新净值折算)", h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: "", true)
-        val weekdaySwitch = Switch(this).apply {
+        val weekdaySwitch = Switch(ui.context).apply {
             text = "仅在交易日 (周一至周五) 执行"
             setTextColor(ui.ink)
             isChecked = h.dcaWeekdaysOnly
@@ -657,7 +723,7 @@ class MainActivity : Activity() {
         body.addView(ui.panel().apply {
             addView(ui.text("显示与刷新", 18f, bold = true))
             fun toggle(label: String, selected: Boolean, change: (Boolean) -> Unit) {
-                addView(Switch(this@MainActivity).apply { text = label; setTextColor(ui.ink); isChecked = selected; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, value -> safe { change(value) } } })
+                addView(Switch(ui.context).apply { text = label; setTextColor(ui.ink); isChecked = selected; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, value -> safe { change(value) } } })
             }
             toggle("深色外观", portfolio.settings.darkMode) { enabled ->
                 setTheme(if (enabled) R.style.AppTheme_Dark else R.style.AppTheme)
@@ -669,6 +735,14 @@ class MainActivity : Activity() {
             addView(ui.button("涨跌配色：" + if (portfolio.settings.redUp) "红涨绿跌 ▾" else "绿涨红跌 ▾") {
                 ui.dialog().setTitle("涨跌配色").setItems(arrayOf("红涨绿跌", "绿涨红跌")) { _, index ->
                     safe { commit(portfolio.copy(settings = portfolio.settings.copy(redUp = index == 0))) }
+                }.setNegativeButton("取消", null).show()
+            })
+            val sizeLabel = when (portfolio.settings.displaySize) {
+                DisplaySize.SMALL -> "较小"; DisplaySize.STANDARD -> "标准"; DisplaySize.LARGE -> "较大"
+            }
+            addView(ui.button("字体与界面大小：$sizeLabel ▾") {
+                ui.dialog().setTitle("字体与界面大小").setItems(arrayOf("较小", "标准", "较大")) { _, index ->
+                    safe { commit(portfolio.copy(settings = portfolio.settings.copy(displaySize = DisplaySize.entries[index]))) }
                 }.setNegativeButton("取消", null).show()
             })
             addView(ui.text("退出到后台或锁屏即停止刷新。", 11f, ui.muted))
@@ -692,7 +766,7 @@ class MainActivity : Activity() {
             addView(ui.text("本机数据", 18f, bold = true))
             addView(ui.text("${portfolio.holdings.size} 只基金 · ${portfolio.trades.size} 条操作记录\n行情来源：东方财富 / 天天基金\n无账号、广告、推送或后台常驻服务", 12f, ui.muted))
             addView(ui.button("清理基金缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); toast("基金缓存已清理，持仓数据保留"); render() } })
-            addView(ui.text("拾盈 0.4.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.text("拾盈 0.5.0 · 原生安卓", 11f, ui.muted))
             addView(ui.button("开源许可与识别模型") {
                 safe {
                     val notice = assets.list("licenses").orEmpty().sorted().joinToString("\n\n") { name ->

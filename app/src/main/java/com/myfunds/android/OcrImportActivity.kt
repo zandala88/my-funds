@@ -51,7 +51,7 @@ class OcrImportActivity : Activity() {
         val settings = LocalStore(this).use { runCatching { it.load().settings }.getOrDefault(AppSettings()) }
         val dark = settings.darkMode
         setTheme(if (dark) R.style.AppTheme_Dark else R.style.AppTheme)
-        ui = Ui(this, dark, settings.redUp)
+        ui = Ui(this, dark, settings.redUp, settings.displaySize)
         val root = ui.box().apply { setPadding(ui.dp(18), ui.dp(12), ui.dp(18), ui.dp(8)); setBackgroundColor(ui.background) }
         root.addView(ui.box(false).apply {
             addView(ui.text("截图导入", 27f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
@@ -80,9 +80,9 @@ class OcrImportActivity : Activity() {
             })
         }
         root.addView(dateControls)
-        selectAll = CheckBox(this).apply {
+        selectAll = CheckBox(ui.context).apply {
             text = "全选"; setTextColor(ui.ink); buttonTintList = ColorStateList.valueOf(ui.accent)
-            minHeight = ui.dp(48); visibility = View.GONE
+            minHeight = ui.touchTarget; visibility = View.GONE
             setOnCheckedChangeListener { _, checked ->
                 if (!updatingSelection) {
                     updatingSelection = true
@@ -292,7 +292,7 @@ class OcrImportActivity : Activity() {
         status.text = if (drafts.isEmpty()) "尚未找到基金。可裁剪到基金区域重试，或修正识别文字后重新解析。" else "${drafts.size} 条候选。请核对基金类别、数值和结算日期，再勾选导入。名称将按基金代码联网核对，图片不会上传。"
         drafts.forEachIndexed { index, draft ->
             val panel = ui.panel()
-            val selected = CheckBox(this).apply { text = "导入第 ${index + 1} 条"; setTextColor(ui.ink); buttonTintList = ColorStateList.valueOf(ui.accent); minHeight = ui.dp(48); isChecked = draft.selected }
+            val selected = CheckBox(ui.context).apply { text = "导入第 ${index + 1} 条"; setTextColor(ui.ink); buttonTintList = ColorStateList.valueOf(ui.accent); minHeight = ui.touchTarget; isChecked = draft.selected }
             val name = field("基金全称（核对 A/C 类别）", draft.name)
             val code = field("六位基金代码", draft.code).apply { inputType = InputType.TYPE_CLASS_NUMBER; filters = arrayOf(InputFilter.LengthFilter(6)) }
             val shares = field("已确认份额", draft.shares, true)
@@ -315,7 +315,7 @@ class OcrImportActivity : Activity() {
             panel.addView(ui.text("基金名称", 12f, ui.muted)); panel.addView(name)
             panel.addView(ui.text("基金代码", 12f, ui.muted)); panel.addView(code)
             panel.addView(ui.button("搜索并匹配基金") { match(row) })
-            panel.addView(ui.text("导入方式", 12f, ui.muted)); panel.addView(mode, LinearLayout.LayoutParams(-1, ui.dp(48)))
+            panel.addView(ui.text("导入方式", 12f, ui.muted)); panel.addView(mode, LinearLayout.LayoutParams(-1, -2))
             panel.addView(ui.text("份额", 12f, ui.muted)); panel.addView(shares)
             panel.addView(ui.text("平均单位成本", 12f, ui.muted)); panel.addView(cost)
             panel.addView(ui.text("持仓结算日期（点击切换已结算/未结算）", 12f, ui.muted)); panel.addView(dateBtn)
