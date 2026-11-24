@@ -59,9 +59,9 @@ class DcaOverviewUiTest {
         assertNotNull("Each DCA card needs an explicit editing action", edit)
         edit!!.performClick(); shadowOf(Looper.getMainLooper()).idle()
         val editor = ShadowAlertDialog.getLatestAlertDialog()
-        assertTrue(views(editor.window!!.decorView).filterIsInstance<android.widget.EditText>().any {
-            it.hint.toString().startsWith("或 每日定投金额") && it.text.toString() == "10"
-        })
+        val fields = views(editor.window!!.decorView).filterIsInstance<android.widget.EditText>()
+        assertTrue(fields.any { it.hint.toString().startsWith("每日定投金额") && it.text.toString() == "10" })
+        assertFalse("定投不应支持设置份额", fields.any { it.hint.toString().contains("份额") })
         editor.dismiss(); controller.pause().stop().destroy()
         }
     }

@@ -58,7 +58,7 @@ class MainActivity : Activity() {
     private val dragScroll = object : Runnable {
         override fun run() {
             if (active && editing && draggedHolding != null && dragScrollStep != 0) {
-                editScroller?.scrollBy(0, dragScrollStep); handler.postDelayed(this, 32)
+                editScroller?.scrollBy(0, dragScrollStep); handler.postDelayed(this, 16)
             }
         }
     }
@@ -167,7 +167,18 @@ class MainActivity : Activity() {
     }
     private fun commit(next: Portfolio) {
         check(!importing) { "正在恢复备份，请稍候" }
-        store.save(next); portfolio = next; render()
+        store.save(next); portfolio = next
+        if (editing && active && !isDestroyed) {
+            refreshEditingPage()
+        } else {
+            render()
+        }
+    }
+    private fun refreshEditingPage() {
+        if (!active || isDestroyed || isFinishing) return
+        visibleEditChecks.clear()
+        body.removeAllViews()
+        editingPage()
     }
     private fun <T> network(task: () -> T, done: (T) -> Unit, failed: (String) -> Unit = { toast(it) }) {
         val ticket = generation
@@ -395,7 +406,7 @@ class MainActivity : Activity() {
                 val bottomRow = ui.box(vertical = ui.compact).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     if (hasDca) {
-                        val dcaText = if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "定投: 每日 ${h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: ""} 元"
+                        val dcaText = if ((h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ¥${h.dcaAmount?.stripTrailingZeros()?.toPlainString()} 元" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "定投中"
                         addView(ui.badge(dcaText, ui.accent).apply {
                             setOnClickListener { setupDcaDialog(h) }
                         })
@@ -498,9 +509,9 @@ class MainActivity : Activity() {
             body.addView(row.view)
         }
         if (holdings.size > 50) body.addView(ui.box(false).apply {
-            addView(ui.button("上一页") { holdingPage = (holdingPage - 1).coerceAtLeast(0); scrollY = 0; render() }, LinearLayout.LayoutParams(0,-2,1f))
+            addView(ui.button("上一页") { holdingPage = (holdingPage - 1).coerceAtLeast(0); editScroller?.scrollY = 0; refreshEditingPage() }, LinearLayout.LayoutParams(0,-2,1f))
             addView(ui.text("${holdingPage + 1} / ${(holdings.size + 49) / 50}"))
-            addView(ui.button("下一页") { holdingPage = (holdingPage + 1).coerceAtMost((holdings.size - 1) / 50); scrollY = 0; render() }, LinearLayout.LayoutParams(0,-2,1f))
+            addView(ui.button("下一页") { holdingPage = (holdingPage + 1).coerceAtMost((holdings.size - 1) / 50); editScroller?.scrollY = 0; refreshEditingPage() }, LinearLayout.LayoutParams(0,-2,1f))
         })
         updateEditorSelection()
     }
@@ -516,14 +527,33 @@ class MainActivity : Activity() {
                 val rowLocation = IntArray(2); val scrollLocation = IntArray(2)
                 view.getLocationOnScreen(rowLocation); scroller.getLocationOnScreen(scrollLocation)
                 val y = rowLocation[1] + event.y - scrollLocation[1]
-                val step = when { y < ui.dp(64) -> -ui.dp(8); y > scroller.height - ui.dp(64) -> ui.dp(8); else -> 0 }
-                if (step != dragScrollStep) { dragScrollStep = step; handler.removeCallbacks(dragScroll); if (step != 0) handler.post(dragScroll) }
+                val zone = ui.dp(100)
+                val step = when {
+                    y < zone -> {
+                        val factor = ((zone - y).toFloat() / zone).coerceIn(0.1f, 3.5f)
+                        -(ui.dp(3) + (ui.dp(24) * factor)).toInt()
+                    }
+                    y > scroller.height - zone -> {
+                        val dist = y - (scroller.height - zone)
+                        val factor = (dist.toFloat() / zone).coerceIn(0.1f, 3.5f)
+                        (ui.dp(3) + (ui.dp(24) * factor)).toInt()
+                    }
+                    else -> 0
+                }
+                val wasStopped = dragScrollStep == 0
+                dragScrollStep = step
+                if (step != 0 && wasStopped) {
+                    handler.removeCallbacks(dragScroll)
+                    handler.post(dragScroll)
+                } else if (step == 0) {
+                    handler.removeCallbacks(dragScroll)
+                }
             }
             android.view.DragEvent.ACTION_DROP -> {
                 val target = editorHoldings().indexOfFirst { it.id == targetId }
                 endEditorDrag(false)
                 if (target >= 0 && id != targetId) safe { commit(PortfolioEditing.move(portfolio, id, target, group)) }
-                else render()
+                else refreshEditingPage()
             }
             android.view.DragEvent.ACTION_DRAG_ENDED -> { ui.round(view, radius = 18); endEditorDrag(true) }
         }
@@ -532,7 +562,7 @@ class MainActivity : Activity() {
     private fun endEditorDrag(renderDeferred: Boolean) {
         draggedHolding = null; dragScrollStep = 0; handler.removeCallbacks(dragScroll)
         val pending = editorRenderDeferred; editorRenderDeferred = false
-        if (pending && renderDeferred) handler.post { if (editing && active && !isDestroyed) render() }
+        if (pending && renderDeferred) handler.post { if (editing && active && !isDestroyed) refreshEditingPage() }
     }
     private fun confirmBulkDelete() {
         val ids = checkedHoldings.toSet()
@@ -750,7 +780,7 @@ class MainActivity : Activity() {
             addView(headerBox)
 
             if (hasDca) {
-                val planDesc = if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "每日定投 ${h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: ""} 元 (按公布净值折算)"
+                val planDesc = if ((h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ¥${h.dcaAmount?.stripTrailingZeros()?.toPlainString()} 元 (按公布净值折算)" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else ""
                 val ruleDesc = if (h.dcaWeekdaysOnly) "仅周一至周五执行" else "每天均自动执行"
                 val lastDateDesc = "已自动执行并同步至: ${h.dcaLastDate ?: today()}"
                 addView(ui.text("$planDesc · $ruleDesc\n$lastDateDesc", 12f, ui.ink).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
@@ -837,8 +867,7 @@ class MainActivity : Activity() {
     }
     private fun setupDcaDialog(h: Holding) {
         val box = ui.box().apply { setPadding(ui.dp(22), ui.dp(10), ui.dp(22), ui.dp(10)) }
-        val sharesField = ui.field("每日定投份额 (份，如 10.00)", h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: "", true)
-        val amountField = ui.field("或 每日定投金额 (元，按最新净值折算)", h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: "", true)
+        val amountField = ui.field("每日定投金额 (元，如 10.00)", h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: "", true)
         val weekdaySwitch = Switch(ui.context).apply {
             text = "仅在交易日 (周一至周五) 执行"
             setTextColor(ui.ink)
@@ -847,8 +876,7 @@ class MainActivity : Activity() {
         }
 
         box.addView(ui.text("每日定投设置", 16f, ui.ink, bold = true))
-        box.addView(ui.text("请设置每日固定定投的份额或金额（二选一）。系统每天会自动根据日期补齐定投并加权更新平均成本：", 12f, ui.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
-        box.addView(sharesField)
+        box.addView(ui.text("设置每日固定定投的金额。系统每天会自动根据公布净值折算份额、自动记账并加权更新持仓成本：", 12f, ui.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
         box.addView(amountField)
         box.addView(weekdaySwitch)
 
@@ -858,7 +886,7 @@ class MainActivity : Activity() {
             .setNegativeButton("取消", null)
             .setPositiveButton("保存并生效", null)
 
-        val hasExistingDca = (h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO
+        val hasExistingDca = (h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO || (h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO
         if (hasExistingDca) {
             builder.setNeutralButton("取消定投计划") { _, _ ->
                 safe {
@@ -873,16 +901,14 @@ class MainActivity : Activity() {
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 try {
-                    val sVal = sharesField.text.toString().trim()
                     val aVal = amountField.text.toString().trim()
-                    require(sVal.isNotBlank() || aVal.isNotBlank()) { "请输入每日定投的份额或金额" }
+                    require(aVal.isNotBlank()) { "请输入每日定投的金额" }
 
-                    val shares = if (sVal.isNotBlank()) sVal.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: throw IllegalArgumentException("份额必须为大于0的数值") else null
-                    val amount = if (aVal.isNotBlank()) aVal.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: throw IllegalArgumentException("金额必须为大于0的数值") else null
+                    val amount = aVal.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: throw IllegalArgumentException("金额必须为大于0的数值")
 
                     val updatedHolding = h.copy(
-                        dcaShares = shares,
-                        dcaAmount = if (shares != null) null else amount,
+                        dcaShares = null,
+                        dcaAmount = amount,
                         dcaWeekdaysOnly = weekdaySwitch.isChecked,
                         dcaLastDate = h.dcaLastDate ?: prevTradingDay()
                     )
