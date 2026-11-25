@@ -276,10 +276,12 @@ class MainActivity : Activity() {
         val dcaBudget = DcaBudget.daily(portfolio.holdings, quotes)
         val dcaActiveCount = dcaBudget.plans
 
-        val dailies = selected.map { fundDailyProfit(it, quotes[it.code]) }
-        val validDailies = dailies.mapNotNull { it.first }
-        val totalDaily = if (validDailies.isNotEmpty()) validDailies.fold(BigDecimal.ZERO, BigDecimal::add) else null
-        val anyEstimated = dailies.any { it.second }
+        val profitDate = today()
+        val held = selected.filter { it.shares.signum() > 0 }
+        val dailies = held.mapNotNull { fundDailyProfit(it, quotes[it.code], profitDate) }.filter { it.date == profitDate }
+        val totalDaily = dailies.takeIf { it.isNotEmpty() }?.fold(BigDecimal.ZERO) { sum, daily -> sum + daily.amount }
+        val anyEstimated = dailies.any { it.estimated }
+        val partialDaily = dailies.size < held.size
 
         // Bento Row 1: Top Asymmetric 2-Card Row
         body.addView(ui.box(vertical = ui.compact).apply {
@@ -290,13 +292,19 @@ class MainActivity : Activity() {
                 val profitRow = ui.box(false).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     if (totalDaily != null) {
-                        val dLabel = if (anyEstimated) "今日估算" else "今日收益"
+                        val dLabel = (if (anyEstimated) "今日估算" else "今日收益") + if (partialDaily) "（部分）" else ""
                         addView(ui.text("$dLabel ${ui.signed(totalDaily)}", 12f, ui.changeColor(totalDaily), true))
+                        addView(ui.text("  ·  ", 11f, ui.muted))
+                    } else {
+                        addView(ui.text("今日收益 暂无数据", 12f, ui.muted))
                         addView(ui.text("  ·  ", 11f, ui.muted))
                     }
                     addView(ui.text("持有收益 ${ui.signed(summary.profit)}", 12f, ui.changeColor(summary.profit), true))
                 }
                 addView(profitRow)
+                if (held.isNotEmpty() && partialDaily) {
+                    addView(ui.text("今日数据 ${dailies.size}/${held.size} 只 · 其余等待更新", 10f, ui.muted))
+                }
                 addView(ui.text("已实现 ${ui.signed(summary.realized)}", 11f, ui.changeColor(summary.realized)))
                 if (summary.missing > 0) {
                     addView(ui.text("${summary.missing} 只暂无净值，显示以成本为准", 10f, ui.muted))
@@ -429,15 +437,13 @@ class MainActivity : Activity() {
                             setOnClickListener { setupDcaDialog(h) }
                         })
                     }
-                    val (dProfit, isEst) = fundDailyProfit(h, q)
+                    val daily = fundDailyProfit(h, q, profitDate)
                     val profitView = ui.box(false).apply {
                         gravity = (if (ui.compact) Gravity.START else Gravity.END) or Gravity.CENTER_VERTICAL
-                        if (dProfit != null) {
-                            val changePct = if (isEst) q?.estimateChange else q?.change
-                            val changeStr = changePct?.let { " (${ui.signed(it, "%")})" } ?: ""
-                            val dLabel = if (isEst) "今日估算 " else "今日 "
-                            addView(ui.text(dLabel, 11f, ui.muted))
-                            addView(ui.text("${ui.signed(dProfit)}$changeStr", 12f, ui.changeColor(dProfit), true))
+                        if (daily != null) {
+                            val changeStr = daily.change?.let { " (${ui.signed(it, "%")})" } ?: ""
+                            addView(ui.text("${daily.label(profitDate)} ", 11f, ui.muted))
+                            addView(ui.text("${ui.signed(daily.amount)}$changeStr", 12f, ui.changeColor(daily.amount), true))
                             addView(ui.text("  ·  ", 11f, ui.muted))
                         }
                         val profitColor = ui.changeColor(profit)
@@ -448,6 +454,7 @@ class MainActivity : Activity() {
                         else LinearLayout.LayoutParams(0, -2, 1f))
                 }
                 addView(bottomRow)
+                DailyProfitPresentation.quoteAsOf(q, profitDate)?.let { addView(ui.text(it, 10f, ui.muted)) }
 
                 setOnClickListener { showHoldingLedger(h) }
                 setOnLongClickListener { holdingActions(h); true }
@@ -598,23 +605,8 @@ class MainActivity : Activity() {
                 commit(PortfolioEditing.delete(portfolio, ids))
             } }.show()
     }
-    private fun currentEstimate(q: FundQuote?): FundQuote? = MarketMath.usableEstimate(q, today())
-    private fun fundDailyProfit(h: Holding, q: FundQuote?): Pair<BigDecimal?, Boolean> {
-        if (h.shares.signum() == 0) return BigDecimal.ZERO to false
-        val nav = q?.nav ?: return null to false
-        val est = currentEstimate(q)
-        if (est?.estimate != null && est.estimate != nav) {
-            val diff = (est.estimate!! - nav) * h.shares
-            return diff.setScale(2, java.math.RoundingMode.HALF_UP) to true
-        }
-        val change = q.change
-        if (change != null && change > BigDecimal("-100")) {
-            val prev = nav.divide(BigDecimal.ONE + change.movePointLeft(2), 16, java.math.RoundingMode.HALF_UP)
-            val diff = (nav - prev) * h.shares
-            return diff.setScale(2, java.math.RoundingMode.HALF_UP) to false
-        }
-        return null to false
-    }
+    private fun fundDailyProfit(h: Holding, q: FundQuote?, date: String = today()): DisplayedDailyProfit? =
+        DailyProfitPresentation.forHolding(h, q, date)
     private fun refreshFunds() {
         if (refreshing) return
         if (portfolio.holdings.isEmpty()) { toast("先添加一只基金"); return }
@@ -797,21 +789,22 @@ class MainActivity : Activity() {
             }
             addView(grid2)
 
-            val (dProfit, isEst) = fundDailyProfit(h, q)
+            val daily = fundDailyProfit(h, q)
             val grid3 = ui.box(false).apply {
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
-                if (dProfit != null) {
-                    val changePct = if (isEst) q?.estimateChange else q?.change
-                    val changeStr = changePct?.let { " (${ui.signed(it, "%")})" } ?: ""
-                    ui.stat(this, if (isEst) "今日估算收益" else "今日收益", "${ui.signed(dProfit)} 元$changeStr", ui.changeColor(dProfit))
+                if (daily != null) {
+                    val changeStr = daily.change?.let { " (${ui.signed(it, "%")})" } ?: ""
+                    ui.stat(this, if (daily.estimated) "今日估算收益" else daily.label(today()), "${ui.signed(daily.amount)} 元$changeStr", ui.changeColor(daily.amount))
+                } else {
+                    ui.stat(this, "当日收益", "暂无数据", ui.muted)
                 }
                 ui.stat(this, "持有盈亏金额", "${ui.signed(profit)} 元", ui.changeColor(profit))
                 ui.stat(this, "持有收益率", ui.signed(rate, "%"), ui.changeColor(rate))
             }
             addView(grid3)
 
-            q?.date?.let {
-                addView(ui.text("注：最新净值公布日期为 $it", 10f, ui.muted).apply { setPadding(0, ui.dp(6), 0, 0) })
+            DailyProfitPresentation.quoteAsOf(q, today())?.let {
+                addView(ui.text(it, 10f, ui.muted).apply { setPadding(0, ui.dp(6), 0, 0) })
             }
         })
 
