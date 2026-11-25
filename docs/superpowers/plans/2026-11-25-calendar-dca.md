@@ -40,7 +40,7 @@ Files: new CalendarDataClient.kt, IncomeCalendarViews.kt, DcaScheduleViews.kt; M
 ### Task 3: Review and delivery
 
 - [x] Independent review; reproduce important findings RED→GREEN and finish full verification.
-- [ ] Commit/push to origin/main; build signed distribution artifacts.
+- [x] Commit/push to origin/main; build signed distribution artifacts.
 - [x] ADB same-signature install -r and launch if device connected; report any missing physical connection.
 
 ## Verification evidence
@@ -48,3 +48,5 @@ Files: new CalendarDataClient.kt, IncomeCalendarViews.kt, DcaScheduleViews.kt; M
 2026-11-25: `scripts/build-local.sh :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleRelease` passed: 152 core + 84 Android tests, zero failures. Independent review and follow-up found no remaining blockers after regression fixes for precise NAV differences, legacy cursors, verified closure retries and baseline/ledger invalidation. Signed 0.9.0 delivery follows.
 
 ADB install `-r` succeeded on OnePlus 13; package reports versionCode 9 / versionName 0.9.0 and MainActivity cold launch returned Status ok. Certificate SHA-256 matches the prior release: `a97685059168df60836b332357f6fa425daca102ec2b869419294defa0d0ea56`.
+
+Delivery: feature commit `5eb30b9` fast-forwarded to `main` and pushed to `origin/main`. The same merged tree passed core/app tests and Lint. On-device daily calendar detail opened successfully with retained holdings. Local arm64 APK SHA-256: `7bff6370ea84efed4b4487c717ef90c5f0e48c32898c91c27e6d387979402276`; universal: `8e27c0c9860137077ccda2bf55f915220e34d62db66995b21e47e60808a81db9`.
