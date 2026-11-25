@@ -7,20 +7,34 @@ import java.net.URL
 import java.net.URLEncoder
 import java.time.Instant
 import java.util.Collections
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicInteger
+import java.nio.charset.Charset
 
-class MarketClient {
+class MarketClient(private val transport: ((String) -> String)? = null) {
     private val connections = Collections.synchronizedSet(mutableSetOf<HttpURLConnection>())
-    fun cancelAll() { synchronized(connections) { connections.toList().forEach { it.disconnect() }; connections.clear() } }
-    private fun get(url: String): String {
+    private val cancellationEpoch = AtomicInteger()
+    fun cancelAll() { cancellationEpoch.incrementAndGet(); synchronized(connections) { connections.toList().forEach { it.disconnect() }; connections.clear() } }
+    private fun get(url: String, epoch: Int = cancellationEpoch.get()): String {
+        if (Thread.currentThread().isInterrupted || epoch != cancellationEpoch.get()) throw CancellationException("刷新已取消")
+        transport?.let { handler ->
+            val response = handler(url)
+            if (Thread.currentThread().isInterrupted || epoch != cancellationEpoch.get()) throw CancellationException("刷新已取消")
+            require(response.length <= 4 * 1024 * 1024) { "行情响应超过大小限制" }
+            return response
+        }
         val connection = URL(url).openConnection() as HttpURLConnection
         connections.add(connection)
         try {
+            if (epoch != cancellationEpoch.get()) throw CancellationException("刷新已取消")
             connection.connectTimeout = 10000; connection.readTimeout = 12000
-            connection.setRequestProperty("User-Agent", "MyFunds/0.1 Android")
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 MyFunds/0.8 Android")
+            connection.setRequestProperty("Referer", if (URL(url).host == "qt.gtimg.cn") "https://gu.qq.com/" else "https://fund.eastmoney.com/")
             require(connection.responseCode in 200..299) { "行情请求失败（${connection.responseCode}）" }
             return connection.inputStream.use { input ->
                 val bytes = readBounded(input, 4 * 1024 * 1024)
-                bytes.toString(Charsets.UTF_8)
+                val charset = if (URL(url).host == "qt.gtimg.cn") Charset.forName("GBK") else Charsets.UTF_8
+                bytes.toString(charset)
             }
         } finally { connections.remove(connection); connection.disconnect() }
     }
@@ -31,6 +45,12 @@ class MarketClient {
     fun quotes(codes: List<String>): List<FundQuote> = codes.chunked(100).flatMap { chunk ->
         MarketParser.quotes(fund("FundMNewApi/FundMNFInfo", mapOf("pageIndex" to "1", "pageSize" to "200", "Fcodes" to chunk.joinToString(","))))
             .map { it.copy(fetchedAt = Instant.now().toString()) }
+    }
+    internal fun enrichQuotes(rows: List<FundQuote>, day: String, read: (String) -> String?, write: (String, String) -> Unit): List<FundQuote> {
+        val epoch = cancellationEpoch.get()
+        return EstimationClient({ url -> get(url, epoch) }, read, write, checkCancelled = {
+            if (epoch != cancellationEpoch.get()) throw CancellationException("刷新已取消")
+        }).enrich(rows, day)
     }
     fun history(code: String, range: String = "y", yield: Boolean = false): List<ChartPoint> = MarketParser.history(
         fund("FundMApi/${if (yield) "FundYieldDiagramNew" else "FundNetDiagram"}.ashx", mapOf("FCODE" to code, "RANGE" to range)), if (yield) "YIELD" else "DWJZ")

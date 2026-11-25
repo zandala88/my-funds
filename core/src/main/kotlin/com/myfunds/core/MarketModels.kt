@@ -11,7 +11,10 @@ import java.time.format.DateTimeFormatter
 data class SearchResult(val code: String, val name: String)
 data class FundQuote(val code: String, val name: String, val nav: BigDecimal?, val date: String?,
     val change: BigDecimal? = null, val estimate: BigDecimal? = null, val estimateChange: BigDecimal? = null,
-    val estimateTime: String? = null, val fetchedAt: String = "")
+    val estimateTime: String? = null, val fetchedAt: String = "",
+    val kind: FundKind = FundKind.UNKNOWN, val incomePerTenThousand: BigDecimal? = null,
+    val model: FundEstimate? = null, val estimateReason: String? = null, val previousDate: String? = null,
+    val currency: String = "CNY", val estimateVerified: Boolean? = null)
 data class ChartPoint(val date: String, val value: BigDecimal)
 data class IndexQuote(val code: String, val name: String, val price: BigDecimal?, val change: BigDecimal?, val time: String? = null, val netFlow: BigDecimal? = null)
 
@@ -43,19 +46,29 @@ object MarketParser {
     fun quotes(raw: String): List<FundQuote> = rows(raw).mapNotNull { o ->
         val code = text(o, "FCODE")
         if (code?.matches(Regex("[0-9]{6}")) != true) return@mapNotNull null
-        val nav = number(o.opt("NAV"))?.takeIf { it > BigDecimal.ZERO }
+        val name = text(o, "SHORTNAME") ?: code
+        val kind = text(o, "FUND_KIND")?.let { runCatching { FundKind.valueOf(it) }.getOrNull() } ?: EstimationParser.kind(name, listed = EstimationParser.listedCandidate(code, name))
+        val wireNav = number(o.opt("NAV"))?.takeIf { it >= BigDecimal.ZERO }
+        val income = number(o.opt("INCOME_PER_10K")) ?: if (kind == FundKind.MONEY && text(o, "FUND_KIND") == null) wireNav else null
+        val nav = if (kind == FundKind.MONEY) wireNav?.takeIf { it.compareTo(BigDecimal.ONE) == 0 } ?: BigDecimal.ONE else wireNav?.takeIf { it > BigDecimal.ZERO }
         val estimate = number(o.opt("GSZ"))?.takeIf { it > BigDecimal.ZERO }
         val time = text(o, "GZTIME")
         val date = text(o, "PDATE")?.takeIf { runCatching { LocalDate.parse(it) }.isSuccess }
-        FundQuote(code, text(o, "SHORTNAME") ?: code, nav, date, number(o.opt("NAVCHGRT")),
-            estimate, if (estimate != null && time != null) number(o.opt("GSZZL")) else null, time, text(o, "fetchedAt") ?: "")
+        FundQuote(code, name, nav, date, number(o.opt("NAVCHGRT")),
+            estimate, if (estimate != null && time != null) number(o.opt("GSZZL")) else null, time, text(o, "fetchedAt") ?: "",
+            kind, income, o.optJSONObject("MODEL_ESTIMATE")?.let(EstimationParser::decodeEstimate), text(o, "ESTIMATE_REASON"),
+            text(o, "PREVIOUS_DATE")?.takeIf { runCatching { LocalDate.parse(it) }.isSuccess },
+            text(o, "CURRENCY") ?: EstimationParser.currency(name), o.opt("ESTIMATE_VERIFIED") as? Boolean)
     }
 
     fun encodeQuotes(quotes: List<FundQuote>): String = JSONObject().put("Datas", JSONArray().also { a -> quotes.forEach { q ->
         a.put(JSONObject().put("FCODE", q.code).put("SHORTNAME", q.name).put("NAV", q.nav?.toPlainString() ?: JSONObject.NULL)
             .put("PDATE", q.date ?: JSONObject.NULL).put("NAVCHGRT", q.change?.toPlainString() ?: JSONObject.NULL)
             .put("GSZ", q.estimate?.toPlainString() ?: JSONObject.NULL).put("GSZZL", q.estimateChange?.toPlainString() ?: JSONObject.NULL)
-            .put("GZTIME", q.estimateTime ?: JSONObject.NULL).put("fetchedAt", q.fetchedAt))
+            .put("GZTIME", q.estimateTime ?: JSONObject.NULL).put("fetchedAt", q.fetchedAt)
+            .put("FUND_KIND", q.kind.name).put("INCOME_PER_10K", q.incomePerTenThousand?.toPlainString() ?: JSONObject.NULL)
+            .put("MODEL_ESTIMATE", q.model?.let(EstimationParser::encodeEstimate) ?: JSONObject.NULL)
+            .put("ESTIMATE_REASON", q.estimateReason ?: JSONObject.NULL).put("PREVIOUS_DATE", q.previousDate ?: JSONObject.NULL).put("CURRENCY", q.currency).put("ESTIMATE_VERIFIED", q.estimateVerified ?: JSONObject.NULL))
     } }).toString()
 
     fun history(raw: String, valueKey: String = "DWJZ"): List<ChartPoint> = rows(raw).mapNotNull { o ->

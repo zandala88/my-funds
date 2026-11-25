@@ -272,13 +272,15 @@ class MainActivity : Activity() {
     private fun holdingsPage() {
         val selected = portfolio.holdings.filter { group == null || it.groupId == group }
         val filtered = portfolio.copy(holdings = selected, trades = portfolio.trades.filter { t -> selected.any { it.id == t.holdingId } })
-        val summary = PortfolioMath.summary(filtered, quotes.mapNotNull { (code, q) -> q.nav?.let { code to it } }.toMap())
+        val nonRmb = selected.filter { (quotes[it.code]?.currency ?: "CNY") != "CNY" }
+        val rmbPortfolio = filtered.copy(holdings = selected - nonRmb, trades = filtered.trades.filter { t -> nonRmb.none { it.id == t.holdingId } })
+        val summary = PortfolioMath.summary(rmbPortfolio, quotes.mapNotNull { (code, q) -> q.nav?.let { code to it } }.toMap())
         val dcaBudget = DcaBudget.daily(portfolio.holdings, quotes)
         val dcaActiveCount = dcaBudget.plans
 
         val profitDate = today()
         val held = selected.filter { it.shares.signum() > 0 }
-        val dailies = held.mapNotNull { fundDailyProfit(it, quotes[it.code], profitDate) }.filter { it.date == profitDate }
+        val dailies = held.mapNotNull { fundDailyProfit(it, quotes[it.code], profitDate) }.filter { it.date == profitDate && it.includeInTotal }
         val totalDaily = dailies.takeIf { it.isNotEmpty() }?.fold(BigDecimal.ZERO) { sum, daily -> sum + daily.amount }
         val anyEstimated = dailies.any { it.estimated }
         val partialDaily = dailies.size < held.size
@@ -287,17 +289,15 @@ class MainActivity : Activity() {
         body.addView(ui.box(vertical = ui.compact).apply {
             // Left Card: Total Asset & Profit Overview
             val leftCard = ui.bentoCard().apply {
-                addView(ui.text("持仓总额（按公布净值）", 11f, ui.muted))
+                addView(ui.text(if (nonRmb.isEmpty()) "持仓总额（按公布净值）" else "持仓总额（人民币份额）", 11f, ui.muted))
                 addView(ui.text(ui.amount(summary.marketValue), 28f, ui.ink, bold = true))
-                val profitRow = ui.box(false).apply {
+                val profitRow = ui.box().apply {
                     gravity = Gravity.CENTER_VERTICAL
                     if (totalDaily != null) {
                         val dLabel = (if (anyEstimated) "今日估算" else "今日收益") + if (partialDaily) "（部分）" else ""
                         addView(ui.text("$dLabel ${ui.signed(totalDaily)}", 12f, ui.changeColor(totalDaily), true))
-                        addView(ui.text("  ·  ", 11f, ui.muted))
                     } else {
                         addView(ui.text("今日收益 暂无数据", 12f, ui.muted))
-                        addView(ui.text("  ·  ", 11f, ui.muted))
                     }
                     addView(ui.text("持有收益 ${ui.signed(summary.profit)}", 12f, ui.changeColor(summary.profit), true))
                 }
@@ -305,6 +305,9 @@ class MainActivity : Activity() {
                 if (held.isNotEmpty() && partialDaily) {
                     addView(ui.text("今日数据 ${dailies.size}/${held.size} 只 · 其余等待更新", 10f, ui.muted))
                 }
+                if (nonRmb.isNotEmpty()) addView(ui.text("外币收益单独列示，未折算汇总", 10f, ui.muted))
+                val modelCount = dailies.count { it.model != null }
+                if (modelCount > 0) addView(ui.text("含 $modelCount 只模型/预测 · 详见基金依据", 10f, ui.muted))
                 addView(ui.text("已实现 ${ui.signed(summary.realized)}", 11f, ui.changeColor(summary.realized)))
                 if (summary.missing > 0) {
                     addView(ui.text("${summary.missing} 只暂无净值，显示以成本为准", 10f, ui.muted))
@@ -370,6 +373,8 @@ class MainActivity : Activity() {
 
         sorted.drop(holdingPage * 50).take(50).forEach { h ->
             val q = quotes[h.code]
+            val daily = fundDailyProfit(h, q, profitDate)
+            val unit = q?.currency?.takeIf { it != "CNY" }?.let { " $it" } ?: ""
             val profit = q?.nav?.let { (it - h.cost) * h.shares }
             val rate = PortfolioMath.holdingRate(h, q?.nav)
             val holdingValue = q?.nav?.let { it * h.shares } ?: (h.cost * h.shares)
@@ -412,13 +417,13 @@ class MainActivity : Activity() {
 
                     // Col 2: 成本净值
                     addView(ui.box().apply {
-                        addView(ui.text("成本净值", 10f, ui.muted))
+                        addView(ui.text("成本净值$unit", 10f, ui.muted))
                         addView(ui.text(if (h.cost.signum() == 0) "0.0000" else ui.amount(h.cost, 4), 13f, ui.ink, bold = true))
                     }, LinearLayout.LayoutParams(0, -2, 1f))
 
                     // Col 3: 持仓总额
                     addView(ui.box().apply {
-                        addView(ui.text("持仓总额", 10f, ui.muted))
+                        addView(ui.text("持仓总额$unit", 10f, ui.muted))
                         addView(ui.text(ui.amount(holdingValue), 13f, ui.ink, bold = true))
                     }, LinearLayout.LayoutParams(0, -2, 1f))
                 }
@@ -437,24 +442,27 @@ class MainActivity : Activity() {
                             setOnClickListener { setupDcaDialog(h) }
                         })
                     }
-                    val daily = fundDailyProfit(h, q, profitDate)
-                    val profitView = ui.box(false).apply {
+                    val profitView = ui.box().apply {
                         gravity = (if (ui.compact) Gravity.START else Gravity.END) or Gravity.CENTER_VERTICAL
                         if (daily != null) {
                             val changeStr = daily.change?.let { " (${ui.signed(it, "%")})" } ?: ""
-                            addView(ui.text("${daily.label(profitDate)} ", 11f, ui.muted))
-                            addView(ui.text("${ui.signed(daily.amount)}$changeStr", 12f, ui.changeColor(daily.amount), true))
-                            addView(ui.text("  ·  ", 11f, ui.muted))
+                            addView(ui.box(false).apply {
+                                addView(ui.text("${daily.label(profitDate)} ", 11f, ui.muted), LinearLayout.LayoutParams(0, -2, 1f))
+                                addView(ui.text("${ui.signed(daily.amount)}$unit$changeStr", 12f, ui.changeColor(daily.amount), true))
+                            })
                         }
                         val profitColor = ui.changeColor(profit)
-                        addView(ui.text("持有 ", 11f, ui.muted))
-                        addView(ui.text("${ui.signed(profit)} (${ui.signed(rate, "%")})", 12f, profitColor, bold = true))
+                        addView(ui.text("持有 ${ui.signed(profit)}$unit (${ui.signed(rate, "%")})", 12f, profitColor, bold = true))
                     }
                     addView(profitView, if (ui.compact) LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) }
                         else LinearLayout.LayoutParams(0, -2, 1f))
                 }
                 addView(bottomRow)
                 DailyProfitPresentation.quoteAsOf(q, profitDate)?.let { addView(ui.text(it, 10f, ui.muted)) }
+                daily?.provenance()?.let { addView(ui.text(it, 10f, ui.muted)) }
+                q?.estimateReason?.takeIf { it.isNotBlank() && daily?.model == null }?.let {
+                    addView(ui.text("估值暂不可用：$it", 10f, ui.muted).apply { maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
+                }
 
                 setOnClickListener { showHoldingLedger(h) }
                 setOnLongClickListener { holdingActions(h); true }
@@ -616,9 +624,26 @@ class MainActivity : Activity() {
             refreshing = false; store.saveQuotes(rows); quotes = store.loadQuotes()
             checkAndApplyDca()
             val valid = rows.count { it.nav != null }
-            status = if (valid > 0) "已获取 $valid 只基金净值 · 定投已自动同步" else "暂无新净值，继续显示本机缓存"
+            refreshEstimates(codes, if (valid > 0) "已更新 $valid 只净值" else "暂无新净值")
+        }, { error -> refreshing = false; refreshEstimates(codes, "$error · 正式行情保留缓存") })
+    }
+    private fun refreshEstimates(codes: List<String>, prefix: String) {
+        val day = today()
+        val holdings = portfolio.holdings.associateBy { it.code }
+        val snapshot = codes.map { code -> quotes[code] ?: run {
+            val name = holdings[code]?.name ?: code
+            FundQuote(code, name, null, null,
+                kind = EstimationParser.kind(name, listed = EstimationParser.listedCandidate(code, name)), currency = EstimationParser.currency(name))
+        } }
+        status = "$prefix · 正在补充各类型估算…"
+        refreshing = true
+        if (tab == 0) render()
+        network({ client.enrichQuotes(snapshot, day, store::cache, store::putCache) }, { enriched ->
+            refreshing = false; store.saveQuotes(enriched); quotes = store.loadQuotes()
+            val modeled = enriched.count { it.model != null }
+            status = "净值按公布日期 · $modeled 只模型/预测 · 以行情日期为准"
             if (tab == 0) render()
-        }, { error -> refreshing = false; status = "$error · 显示本机缓存"; if (tab == 0) render() })
+        }, { error -> refreshing = false; status = "正式行情已保留 · 估算未完成：$error"; if (tab == 0) render() })
     }
     private fun sortDialog() {
         val values = listOf("custom", "manual", "name", "profit", "change")
@@ -756,6 +781,7 @@ class MainActivity : Activity() {
     }
     private fun showHoldingLedger(h: Holding) {
         val q = quotes[h.code]
+        val currency = q?.currency?.takeIf { it != "CNY" } ?: "元"
         val holdingValue = q?.nav?.let { it * h.shares } ?: (h.cost * h.shares)
         val profit = q?.nav?.let { (it - h.cost) * h.shares }
         val rate = PortfolioMath.holdingRate(h, q?.nav)
@@ -784,8 +810,8 @@ class MainActivity : Activity() {
 
             val grid2 = ui.box(false).apply {
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
-                ui.stat(this, "最新公布净值", "${ui.amount(q?.nav, 4)} 元", ui.ink)
-                ui.stat(this, "持仓总市值", "${ui.amount(holdingValue)} 元", ui.ink)
+                ui.stat(this, "最新公布净值", "${ui.amount(q?.nav, 4)} $currency", ui.ink)
+                ui.stat(this, "持仓总市值", "${ui.amount(holdingValue)} $currency", ui.ink)
             }
             addView(grid2)
 
@@ -794,11 +820,11 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) }
                 if (daily != null) {
                     val changeStr = daily.change?.let { " (${ui.signed(it, "%")})" } ?: ""
-                    ui.stat(this, if (daily.estimated) "今日估算收益" else daily.label(today()), "${ui.signed(daily.amount)} 元$changeStr", ui.changeColor(daily.amount))
+                    ui.stat(this, daily.ledgerLabel(today()), "${ui.signed(daily.amount)} $currency$changeStr", ui.changeColor(daily.amount))
                 } else {
                     ui.stat(this, "当日收益", "暂无数据", ui.muted)
                 }
-                ui.stat(this, "持有盈亏金额", "${ui.signed(profit)} 元", ui.changeColor(profit))
+                ui.stat(this, "持有盈亏金额", "${ui.signed(profit)} $currency", ui.changeColor(profit))
                 ui.stat(this, "持有收益率", ui.signed(rate, "%"), ui.changeColor(rate))
             }
             addView(grid3)
@@ -806,6 +832,9 @@ class MainActivity : Activity() {
             DailyProfitPresentation.quoteAsOf(q, today())?.let {
                 addView(ui.text(it, 10f, ui.muted).apply { setPadding(0, ui.dp(6), 0, 0) })
             }
+            daily?.provenance()?.let { addView(ui.text(it, 11f, ui.muted)) }
+            daily?.model?.let { addView(ui.text(it.note, 11f, ui.muted)) }
+            q?.estimateReason?.takeIf { it.isNotBlank() && daily?.model == null }?.let { addView(ui.text("估值暂不可用：$it", 11f, ui.muted)) }
         })
 
         // Section 2: DCA Plan Box
@@ -974,7 +1003,7 @@ class MainActivity : Activity() {
                 setTheme(if (enabled) R.style.AppTheme_Dark else R.style.AppTheme)
                 commit(portfolio.copy(settings = portfolio.settings.copy(darkMode = enabled)))
             }
-            toggle("前台每 60 秒刷新基金", portfolio.settings.autoRefresh) { commit(portfolio.copy(settings = portfolio.settings.copy(autoRefresh = it))); restartTimer() }
+            toggle("前台每 60 秒刷新基金与估算", portfolio.settings.autoRefresh) { commit(portfolio.copy(settings = portfolio.settings.copy(autoRefresh = it))); restartTimer() }
             toggle("显示持有份额", portfolio.settings.showShares) { commit(portfolio.copy(settings = portfolio.settings.copy(showShares = it))) }
             toggle("显示平均成本", portfolio.settings.showCost) { commit(portfolio.copy(settings = portfolio.settings.copy(showCost = it))) }
             val colorLabel = if (portfolio.settings.redUp) "红涨绿跌" else "绿涨红跌"
@@ -1012,7 +1041,7 @@ class MainActivity : Activity() {
             addView(ui.text("本机数据", 18f, bold = true))
             addView(ui.text("${portfolio.holdings.size} 只基金 · ${portfolio.trades.size} 条操作记录\n行情来源：东方财富 / 天天基金\n无账号、广告、推送或后台常驻服务", 12f, ui.muted))
             addView(ui.button("清理基金缓存（保留持仓与备份）") { safe { store.clearCache(); quotes = emptyMap(); toast("基金缓存已清理，持仓数据保留"); render() } })
-            addView(ui.text("拾盈 0.7.0 · 原生安卓", 11f, ui.muted))
+            addView(ui.text("拾盈 ${packageManager.getPackageInfo(packageName, 0).versionName} · 原生安卓", 11f, ui.muted))
             addView(ui.button("开源许可与识别模型") {
                 safe {
                     val notice = assets.list("licenses").orEmpty().sorted().joinToString("\n\n") { name ->

@@ -22,18 +22,35 @@ object MarketMath {
         if (opening.signum() < 0) return null
         return daily(h.copy(shares = opening), q, today)
     }
+    private fun precedingSession(date: String?, today: String): Boolean = runCatching {
+        val start = java.time.LocalDate.parse(date)
+        val end = java.time.LocalDate.parse(today)
+        val gap = java.time.temporal.ChronoUnit.DAYS.between(start, end)
+        gap == 1L || (gap == 3L && start.dayOfWeek == java.time.DayOfWeek.FRIDAY && end.dayOfWeek == java.time.DayOfWeek.MONDAY)
+    }.getOrDefault(false)
     fun usableEstimate(q: FundQuote?, today: String): FundQuote? = q?.takeIf {
-        it.nav != null && it.date != null && it.date < today && it.estimate != null && it.estimateTime?.take(10) == today
+        it.estimateVerified != false && it.kind !in listOf(FundKind.MONEY, FundKind.QDII) && it.currency == "CNY" &&
+            !it.name.contains("QDII", true) && !it.name.contains("海外") && precedingSession(it.date, today) && it.nav?.signum() == 1 && it.date != null && runCatching { java.time.LocalDate.parse(it.date) }.isSuccess && it.date < today && it.estimate?.signum() == 1 && it.estimateTime?.take(10) == today && runCatching { java.time.LocalDateTime.parse(it.estimateTime.replace(' ', 'T')) }.isSuccess
     }
     fun daily(h: Holding, q: FundQuote?, today: String): DailyProfit? {
         if (h.shares.signum() == 0) return DailyProfit(BigDecimal.ZERO, false)
-        val nav = q?.nav ?: return null
+        q ?: return null
+        val market = q.model?.takeIf { q.kind in listOf(FundKind.ETF, FundKind.REIT) && it.method == EstimateMethod.MARKET &&
+            it.date == today && it.complete && it.basisPrice.signum() > 0 && it.currency == q.currency && it.change > BigDecimal("-100") }
+        if (market != null) return DailyProfit((market.basisPrice * market.change.movePointLeft(2) * h.shares).setScale(2, RoundingMode.HALF_UP), false)
+        val nav = q.nav
+        val income = q.incomePerTenThousand
+        if (q.kind == FundKind.MONEY && q.date == today && income != null) {
+            return DailyProfit((income.movePointLeft(4) * h.shares).setScale(2, RoundingMode.HALF_UP), false)
+        }
         val change = q.change
-        if (q.date == today && change != null && change > BigDecimal("-100")) {
+        if (q.kind != FundKind.MONEY && nav != null && q.date == today && change != null && change > BigDecimal("-100")) {
             val previous = nav.divide(BigDecimal.ONE + change.movePointLeft(2), 18, RoundingMode.HALF_UP)
             return DailyProfit(((nav - previous) * h.shares).setScale(2, RoundingMode.HALF_UP), false)
         }
-        val estimate = usableEstimate(q, today)?.estimate ?: return null
-        return DailyProfit(((estimate - nav) * h.shares).setScale(2, RoundingMode.HALF_UP), true)
+        val estimate = usableEstimate(q, today)?.estimate
+        if (estimate != null && nav != null) return DailyProfit(((estimate - nav) * h.shares).setScale(2, RoundingMode.HALF_UP), true)
+        val model = q.model?.takeIf { it.date == today && it.complete && it.basisPrice.signum() > 0 && it.currency == q.currency && it.change > BigDecimal("-100") } ?: return null
+        return DailyProfit((model.basisPrice * model.change.movePointLeft(2) * h.shares).setScale(2, RoundingMode.HALF_UP), true)
     }
 }

@@ -134,4 +134,63 @@ class DailyProfitUiTest {
         }
     }
 
+    private fun model(date: LocalDate = today, complete: Boolean = true, method: EstimateMethod = EstimateMethod.HOLDINGS) =
+        FundEstimate(date.toString(), BigDecimal("3"), BigDecimal("1.02"), date.minusDays(1).toString(), "$date 14:00 Asia/Shanghai", method,
+            BigDecimal("30"), if (complete) BigDecimal("100") else BigDecimal("30"), complete, "2026-09-30", "未披露仓位使用指数代理")
+
+    @Test fun completeLocalModelShowsSourceCoverageAndTodaysProfit() {
+        withPage(quotes = listOf(quote(today.minusDays(1)).copy(model = model()))) { activity, labels ->
+            assertTrue(labels.toString(), labels.any { it == "今日模型估算 " })
+            assertTrue(labels.any { it == "今日估算 +3.06" })
+            assertTrue(labels.any { it.contains("直接行情覆盖 30%") })
+            val ledger = ledgerTexts(activity)
+            assertTrue(ledger.any { it == "今日模型估算" })
+            assertTrue(ledger.any { it.contains("指数代理") })
+        }
+    }
+    @Test fun partialModelIsShownAsContributionAndNotAddedToDailyTotal() {
+        withPage(quotes = listOf(quote(today.minusDays(1)).copy(model = model(complete = false)))) { _, labels ->
+            assertTrue(labels.toString(), labels.any { it == "今日部分持仓贡献 " })
+            assertTrue(labels.any { it == "今日收益 暂无数据" })
+        }
+    }
+    @Test fun foreignPreviousSessionIsNeverLabeledToday() {
+        withPage(quotes = listOf(quote(today.minusDays(2)).copy(model = model(today.minusDays(1), method = EstimateMethod.OVERSEAS)))) { activity, labels ->
+            assertTrue(labels.toString(), labels.any { it == "昨日模型估算 " })
+            assertTrue(labels.any { it == "今日收益 暂无数据" })
+            assertTrue(ledgerTexts(activity).any { it == "昨日模型估算" })
+        }
+    }
+    @Test fun monetaryForecastUsesPredictionLabelAndDoesNotChangeHoldingPrice() {
+        val q = quote(today.minusDays(1)).copy(nav = BigDecimal.ONE, change = null, kind = FundKind.MONEY, incomePerTenThousand = BigDecimal("0.5"),
+            model = model(method = EstimateMethod.MONEY).copy(change = BigDecimal("0.005"), basisPrice = BigDecimal.ONE))
+        withPage(holdings = listOf(h.copy(shares = BigDecimal("10000"))), quotes = listOf(q)) { _, labels ->
+            assertTrue(labels.toString(), labels.any { it == "今日收益预测 " })
+            assertTrue(labels.any { it == "今日估算 +0.50" })
+            assertTrue(labels.any { it.contains("10,000.00") || it == "10000.00" })
+        }
+    }
+    @Test fun unavailableModelExplainsMissingInputInListAndLedger() {
+        val q = quote(today.minusDays(1)).copy(change = null, estimateReason = "缺少债券仓位行情")
+        withPage(quotes = listOf(q)) { activity, labels ->
+            assertTrue(labels.toString(), labels.any { it.contains("估值暂不可用") && it.contains("债券") })
+            assertTrue(ledgerTexts(activity).any { it.contains("估值暂不可用") && it.contains("债券") })
+        }
+    }
+    @Test fun foreignCurrencyProfitsRemainSeparateFromRmbTotals() {
+        val q = quote(today.minusDays(1)).copy(currency = "USD", model = model().copy(currency = "USD"))
+        withPage(quotes = listOf(q)) { _, labels ->
+            assertTrue(labels.toString(), labels.any { it == "今日收益 暂无数据" })
+            assertTrue(labels.any { it.contains("USD") })
+            assertTrue(labels.any { it.contains("外币收益单独列示") })
+        }
+    }
+
+    @Test fun listedMarketModelHasPriorityOverSameDayPublishedNav() {
+        withPage(quotes = listOf(quote(today).copy(kind = FundKind.ETF, model = model(method = EstimateMethod.MARKET)))) { _, labels ->
+            assertTrue(labels.toString(), labels.any { it == "今日场内收益 " })
+            assertTrue(labels.any { it == "今日收益 +3.06" })
+        }
+    }
+
 }
