@@ -8,11 +8,11 @@ import java.time.Instant
 
 class PreparedBackup internal constructor(val encoded: String, val portfolio: Portfolio)
 object BackupCodec {
-    const val MAX_BYTES = 8 * 1024 * 1024
+    const val MAX_BYTES = 32 * 1024 * 1024
     fun prepare(raw: String): PreparedBackup { val p = decode(raw); return PreparedBackup(encode(p), p) }
     fun encode(p: Portfolio): String {
         p.validate()
-        val root = JSONObject().put("format", "my-funds-backup").put("schemaVersion", 1).put("exportedAt", Instant.now().toString())
+        val root = JSONObject().put("format", "my-funds-backup").put("schemaVersion", 2).put("exportedAt", Instant.now().toString())
         root.put("holdings", JSONArray().also { a -> p.holdings.forEach { h -> a.put(JSONObject()
             .put("id", h.id).put("code", h.code).put("name", h.name).put("groupId", h.groupId)
             .put("shares", h.shares.toPlainString()).put("cost", h.cost.toPlainString()).put("order", h.order).put("starred", h.starred)
@@ -20,19 +20,20 @@ object BackupCodec {
             .put("dcaShares", h.dcaShares?.toPlainString() ?: JSONObject.NULL)
             .put("dcaAmount", h.dcaAmount?.toPlainString() ?: JSONObject.NULL)
             .put("dcaLastDate", h.dcaLastDate ?: JSONObject.NULL)
-            .put("dcaWeekdaysOnly", h.dcaWeekdaysOnly)) } })
+            .put("dcaWeekdaysOnly", h.dcaWeekdaysOnly).put("dcaSchedule", h.dcaSchedule?.let { CalendarLedgerCodec.schedule(it) } ?: JSONObject.NULL)) } })
         root.put("groups", JSONArray().also { a -> p.groups.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name)) } })
         root.put("trades", JSONArray().also { a -> p.trades.forEach { t -> a.put(JSONObject().put("id", t.id).put("holdingId", t.holdingId)
             .put("kind", t.kind).put("shares", t.shares.toPlainString()).put("price", t.price.toPlainString())
             .put("fee", t.fee.toPlainString()).put("date", t.date).put("realized", t.realized.toPlainString())) } })
+        root.put("incomes",CalendarLedgerCodec.incomes(p.incomes)).put("executions",CalendarLedgerCodec.executions(p.executions))
         val s = p.settings
         root.put("settings", JSONObject().put("darkMode", s.darkMode).put("autoRefresh", s.autoRefresh).put("sort", s.sort)
             .put("displaySize", s.displaySize.name).put("redUp", s.redUp).put("showShares", s.showShares).put("showCost", s.showCost).put("indexCodes", JSONArray(s.indexCodes)))
-        return root.toString().also { require(it.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "备份超过 8MB 限制" } }
+        return root.toString().also { require(it.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "备份超过 32MB 限制" } }
     }
 
     fun decode(raw: String): Portfolio = try {
-        require(raw.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "备份超过 8MB 限制" }
+        require(raw.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "备份超过 32MB 限制" }
         var depth = 0; var quoted = false; var escaped = false
         for (c in raw) {
             if (quoted) { if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '"') quoted = false }
@@ -42,7 +43,7 @@ object BackupCodec {
         val root = tokener.nextValue() as? JSONObject ?: throw IllegalArgumentException("不是有效的备份文件")
         require(tokener.nextClean() == '\u0000') { "备份包含多余内容" }
         require(root.getString("format") == "my-funds-backup") { "不是 My Funds 备份" }
-        require(root.get("schemaVersion").toString() == "1") { "备份版本不兼容，请更新应用" }
+        require(root.get("schemaVersion").toString() in listOf("1","2")) { "备份版本不兼容，请更新应用" }
         require(runCatching { Instant.parse(root.getString("exportedAt")) }.isSuccess) { "备份时间无效" }
         fun text(o: JSONObject, key: String): String = (o.get(key) as? String)?.also { require(it.length <= 300) } ?: throw IllegalArgumentException("字段 $key 必须是文本")
         fun decimal(o: JSONObject, key: String): BigDecimal {
@@ -67,7 +68,7 @@ object BackupCodec {
             if (!o.has("dcaShares") || o.isNull("dcaShares")) null else decimal(o, "dcaShares"),
             if (!o.has("dcaAmount") || o.isNull("dcaAmount")) null else decimal(o, "dcaAmount"),
             if (!o.has("dcaLastDate") || o.isNull("dcaLastDate")) null else text(o, "dcaLastDate"),
-            if (!o.has("dcaWeekdaysOnly") || o.isNull("dcaWeekdaysOnly")) true else bool(o, "dcaWeekdaysOnly")) }
+            if (!o.has("dcaWeekdaysOnly") || o.isNull("dcaWeekdaysOnly")) true else bool(o, "dcaWeekdaysOnly"), if(!o.has("dcaSchedule") || o.isNull("dcaSchedule")) null else CalendarLedgerCodec.schedule(o.getJSONObject("dcaSchedule"))) }
         val groups = rows("groups", 1000) { Group(text(it, "id"), text(it, "name")) }
         val trades = rows("trades", 100000) { o -> Trade(text(o, "id"), text(o, "holdingId"), text(o, "kind"),
             decimal(o, "shares"), decimal(o, "price"), decimal(o, "fee"), text(o, "date"), decimal(o, "realized")) }
@@ -75,7 +76,9 @@ object BackupCodec {
         require(indices.length() <= 12)
         Portfolio(holdings, groups, trades, AppSettings(bool(s, "darkMode"), bool(s, "autoRefresh"), text(s, "sort"),
             bool(s, "showShares"), bool(s, "showCost"), (0 until indices.length()).map { indices.getString(it) }, if (s.has("redUp")) bool(s, "redUp") else true,
-            if (s.has("displaySize")) DisplaySize.valueOf(text(s, "displaySize")) else DisplaySize.STANDARD)).validate()
+            if (s.has("displaySize")) DisplaySize.valueOf(text(s, "displaySize")) else DisplaySize.STANDARD),
+            if(root.has("incomes")) CalendarLedgerCodec.incomes(root.getJSONArray("incomes")) else emptyList(),
+            if(root.has("executions")) CalendarLedgerCodec.executions(root.getJSONArray("executions")) else emptyList()).validate()
     } catch (e: IllegalArgumentException) { throw e }
       catch (_: Exception) { throw IllegalArgumentException("备份文件损坏或缺少必要字段") }
 }

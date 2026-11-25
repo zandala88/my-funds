@@ -29,6 +29,10 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var body: LinearLayout
     private var portfolio = Portfolio()
+    private var tradingCalendar = TradingCalendar.builtin()
+    private val calendarPrices = linkedMapOf<String, DailyNav>()
+    private var calendarLoading = false
+    private val pendingCalendars = linkedMapOf<java.time.YearMonth,MutableList<()->Unit>>()
     private var quotes = emptyMap<String, FundQuote>()
     private var tab = 0
     private var group: String? = null
@@ -83,7 +87,7 @@ class MainActivity : Activity() {
         editing = savedInstanceState?.getBoolean("editing") ?: false
         checkedHoldings.addAll(savedInstanceState?.getStringArrayList("checkedHoldings").orEmpty())
         store = LocalStore(this)
-        try { portfolio = store.load(); quotes = store.loadQuotes() }
+        try { portfolio = store.load(); quotes = store.loadQuotes(); tradingCalendar = store.tradingCalendar() }
         catch (_: Exception) {
             Ui(this, false).dialog().setTitle("本机数据读取失败").setMessage("原数据未覆盖。请保留备份，重新打开应用或恢复备份后再试。")
                 .setPositiveButton("关闭") { _, _ -> finish() }.setCancelable(false).show(); return
@@ -133,7 +137,7 @@ class MainActivity : Activity() {
             val fresh = store.load()
             val rows = ReviewedImport.decode(raw)
             val destination = group?.takeIf { id -> fresh.groups.any { it.id == id } } ?: "default"
-            val next = ReviewedImport.apply(fresh, rows, destination)
+            val next = CalendarSnapshots.afterEdit(fresh,ReviewedImport.apply(fresh, rows, destination))
             if (next == fresh) { portfolio = fresh; toast("勾选的基金已在自选中，无需重复导入；原恢复点保留"); render(); return@safe }
             val prepared = BackupCodec.prepare(BackupCodec.encode(next))
             store.replacePreparedBackup(prepared); portfolio = next; holdingPage = 0
@@ -142,7 +146,7 @@ class MainActivity : Activity() {
         }
     }
     override fun onStop() {
-        active = false; endEditorDrag(false); generation++; refreshing = false; handler.removeCallbacks(refreshLoop)
+        active = false; endEditorDrag(false); generation++; refreshing = false; calendarLoading = false; pendingCalendars.clear(); handler.removeCallbacks(refreshLoop)
         networkJobs.forEach { it.cancel(true) }; networkJobs.clear(); client.cancelAll()
         super.onStop()
     }
@@ -158,16 +162,69 @@ class MainActivity : Activity() {
     private fun toast(message: String) = Toast.makeText(this, message.take(200), Toast.LENGTH_LONG).show()
     private fun safe(action: () -> Unit) { try { action() } catch (e: Exception) { toast(e.message ?: "操作未完成，原数据已保留") } }
     private fun checkAndApplyDca() {
-        val td = today()
-        val updated = PortfolioOperations.applyDcaCatchUp(portfolio, td, quotes)
-        if (updated != portfolio) {
-            store.save(updated)
-            portfolio = updated
+        if(!::store.isInitialized) return
+        safe {
+            val dated=quotes.values.filter { it.kind !in listOf(FundKind.ETF,FundKind.REIT) && !EstimationParser.listedCandidate(it.code,it.name) }.mapNotNull { q->
+                val nav=q.nav?.takeIf { it.signum()>0 } ?: return@mapNotNull null
+                DailyNav(q.code,q.date ?: return@mapNotNull null,nav,currency=q.currency,kind=q.kind)
+            }
+            val updated=CalendarSnapshots.afterEdit(portfolio,DcaEngine.advance(portfolio,today(),calendarPrices.values.toList()+dated,tradingCalendar).portfolio)
+            if(updated!=portfolio) { store.save(updated); portfolio=updated }
         }
+    }
+    private fun captureIncome() {
+        val next=CalendarSnapshots.capture(portfolio,quotes,today())
+        if(next!=portfolio) { store.save(next); portfolio=next }
+    }
+    private fun showIncomeCalendar() {
+        IncomeCalendarViews(ui,{ portfolio }) { month,done->refreshCalendar(month,done) }.show()
+    }
+    private fun refreshCalendar(month: java.time.YearMonth=java.time.YearMonth.now(ZoneId.of("Asia/Shanghai")),done: ()->Unit={}) {
+        if(month>java.time.YearMonth.now(ZoneId.of("Asia/Shanghai"))) { done(); return }
+        if(calendarLoading) { pendingCalendars.getOrPut(month) { mutableListOf() }.add(done); return }
+        calendarLoading=true
+        val requested=portfolio.holdings.map { it.id to it.code }.toMap()
+        val requestedQuotes=portfolio.holdings.map { h->quotes[h.code] ?: FundQuote(h.code,h.name,null,null,kind=EstimationParser.kind(h.name,listed=EstimationParser.listedCandidate(h.code,h.name)),currency=EstimationParser.currency(h.name)) }
+        val currentCalendar=tradingCalendar
+        network({
+            val data=client.calendarData(store::cache,store::putCache)
+            val calendar=data.calendar(currentCalendar)
+            val histories=requestedQuotes.mapNotNull { q->try { data.history(q,month) } catch(e: java.util.concurrent.CancellationException) { throw e } catch(_: Exception) { null } }
+            calendar to histories
+        },{ (calendar,histories)->safe {
+            calendarLoading=false; tradingCalendar=calendar; store.saveTradingCalendar(calendar)
+            // Recompute against the latest ledger; never restore the captured portfolio over user edits.
+            for(history in histories) {
+                val h=portfolio.holdings.firstOrNull { requested[it.id]==it.code && it.code==history.code } ?: continue
+                history.points.forEach { price->calendarPrices["${price.code}:${price.date}:${price.currency}"]=price }
+                portfolio=IncomeCalendar.merge(portfolio,IncomeCalendar.fromHistory(portfolio,h,history,month,tradingCalendar))
+            }
+            checkAndApplyDca()
+            // Newly posted historical DCA changes subsequent opening shares.
+            for(history in histories) portfolio.holdings.firstOrNull { requested[it.id]==it.code && it.code==history.code }?.let { h->
+                portfolio=IncomeCalendar.merge(portfolio,IncomeCalendar.fromHistory(portfolio,h,history,month,tradingCalendar))
+            }
+            captureIncome(); store.save(portfolio)
+            status="日历已更新：${histories.size}/${requested.size} 只 · 缺失日期保留待补"
+            if(tab==0) render()
+        }; done(); drainCalendars() },{ error->calendarLoading=false; status="日历更新未完成：$error"; if(tab==0) render(); done(); drainCalendars() })
+    }
+    private fun drainCalendars() {
+        if(calendarLoading || !active || pendingCalendars.isEmpty()) return
+        val item=pendingCalendars.entries.first(); val month=item.key; val callbacks=item.value.toList(); pendingCalendars.remove(month)
+        refreshCalendar(month) { callbacks.forEach { it() } }
+    }
+    private fun refreshDcaHistory() {
+        val oldest=portfolio.executions.filter { it.status in setOf(DcaStatus.WAITING_NAV,DcaStatus.WAITING_PREVIOUS) }.mapNotNull { it.executionDate }.minOrNull()
+        val month=oldest?.let { java.time.YearMonth.from(LocalDate.parse(it)) } ?: java.time.YearMonth.now(ZoneId.of("Asia/Shanghai"))
+        val currentMonth=java.time.YearMonth.now(ZoneId.of("Asia/Shanghai"))
+        refreshCalendar(currentMonth) { if(month!=currentMonth) refreshCalendar(month) }
     }
     private fun commit(next: Portfolio) {
         check(!importing) { "正在恢复备份，请稍候" }
-        store.save(next); portfolio = next
+        val reconciled=CalendarSnapshots.afterEdit(portfolio,next)
+        store.save(reconciled); portfolio = reconciled
+        captureIncome()
         if (editing && active && !isDestroyed) {
             refreshEditingPage()
         } else {
@@ -275,11 +332,12 @@ class MainActivity : Activity() {
         val nonRmb = selected.filter { (quotes[it.code]?.currency ?: "CNY") != "CNY" }
         val rmbPortfolio = filtered.copy(holdings = selected - nonRmb, trades = filtered.trades.filter { t -> nonRmb.none { it.id == t.holdingId } })
         val summary = PortfolioMath.summary(rmbPortfolio, quotes.mapNotNull { (code, q) -> q.nav?.let { code to it } }.toMap())
-        val dcaBudget = DcaBudget.daily(portfolio.holdings, quotes)
-        val dcaActiveCount = dcaBudget.plans
+        val budgets = DcaBudget.onDate(portfolio,quotes,today(),tradingCalendar)
+        val dcaBudget = budgets["CNY"] ?: DailyDcaBudget(BigDecimal.ZERO,0,0)
+        val dcaActiveCount = portfolio.holdings.count { DcaSchedules.enabled(it) && it.dcaSchedule?.paused!=true && (it.dcaSchedule?.endDate ?: today())>=today() }
 
         val profitDate = today()
-        val held = selected.filter { it.shares.signum() > 0 }
+        val held = selected.filter { it.shares.signum()>0 || (HoldingTimeline.opening(portfolio,it,profitDate).shares?.signum() ?: 0)>0 || portfolio.trades.any { t->t.holdingId==it.id && t.date==profitDate && t.fee.signum()>0 } }
         val dailies = held.mapNotNull { fundDailyProfit(it, quotes[it.code], profitDate) }.filter { it.date == profitDate && it.includeInTotal }
         val totalDaily = dailies.takeIf { it.isNotEmpty() }?.fold(BigDecimal.ZERO) { sum, daily -> sum + daily.amount }
         val anyEstimated = dailies.any { it.estimated }
@@ -318,19 +376,20 @@ class MainActivity : Activity() {
 
             // Right Card: DCA Automatic Status
             val rightCard = ui.bentoCard().apply {
-                addView(ui.text("每日定投预计", 11f, ui.muted))
+                addView(ui.text("今日计划投入", 11f, ui.muted))
                 addView(ui.text("¥ ${ui.amount(dcaBudget.total)}", 22f, ui.accent, bold = true).apply {
                     maxLines = 1
                     setAutoSizeTextTypeUniformWithConfiguration(16, 22, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
                 })
                 addView(ui.text("$dcaActiveCount 只 · 全部分组", 11f, ui.muted))
                 if (dcaBudget.missingPrices > 0) addView(ui.text("已知 ¥${ui.amount(dcaBudget.knownAmount)}\n${dcaBudget.missingPrices} 只待净值", 10f, ui.muted))
-                else addView(ui.text("按计划执行日计算", 10f, ui.muted))
+                else addView(ui.text("按今日执行日计算", 10f, ui.muted))
+                budgets.filterKeys { it!="CNY" }.forEach { (ccy,b)->addView(ui.text("$ccy ${ui.amount(b.total)}",11f,ui.muted)) }
                 addView(ui.text("查看计划 ›", 11f, ui.accent, true))
                 background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(ui.soft),
                     ui.shape(ui.card, 20, ui.border, 1), ui.shape(Color.WHITE, 20))
                 isFocusable = true
-                contentDescription = "每日定投预计，${dcaBudget.plans} 只基金，点击查看定投计划"
+                contentDescription = "今日计划投入，${dcaBudget.plans} 只基金，点击查看定投计划"
                 setOnClickListener { showDcaPlans() }
             }
             addView(rightCard, if (ui.compact) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f))
@@ -340,7 +399,7 @@ class MainActivity : Activity() {
         body.addView(ui.box().apply {
             setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8))
             ui.round(this, ui.soft, 12, ui.border, 1)
-            val syncText = if (dcaActiveCount > 0) "● 定投计划已同步至今日 (${today()}) · 本地自动记账" else "● 数据安全保存在本地 · 点击基金查看导入记录"
+            val syncText = if (dcaActiveCount > 0) "● 本地模拟定投 · ${portfolio.executions.count { it.status !in setOf(DcaStatus.RECORDED,DcaStatus.SKIPPED,DcaStatus.CANCELLED) }} 期等待处理" else "● 数据安全保存在本地 · 点击基金查看导入记录"
             addView(ui.text(syncText, 11f, ui.muted))
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8); bottomMargin = ui.dp(10) }
         })
@@ -349,8 +408,9 @@ class MainActivity : Activity() {
         val actions: List<Pair<String, () -> Unit>> = listOf(
             "＋ 添加自选" to { searchDialog() },
             "截图导入" to { startActivityForResult(Intent(this, OcrImportActivity::class.java), 102) },
-            "$groupName ▾" to { chooseGroup() }, "排序 ▾" to { sortDialog() })
-        actions.chunked(if (ui.context.resources.configuration.screenWidthDp / ui.scale < 440f) 2 else 4).forEach { row ->
+            "$groupName ▾" to { chooseGroup() }, "排序 ▾" to { sortDialog() },
+            "收益日历" to { showIncomeCalendar() }, "定投计划" to { showDcaPlans() })
+        actions.chunked(if (ui.context.resources.configuration.screenWidthDp / ui.scale < 440f) 2 else 3).forEach { row ->
             body.addView(ui.box(false).apply {
                 row.forEachIndexed { index, (label, action) ->
                     addView(ui.button(label, primary = label == "＋ 添加自选", action = action), LinearLayout.LayoutParams(0, -2, 1f).apply {
@@ -433,7 +493,7 @@ class MainActivity : Activity() {
                 val bottomRow = ui.box(vertical = ui.compact).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     if (hasDca) {
-                        val dcaText = if ((h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ¥${h.dcaAmount?.stripTrailingZeros()?.toPlainString()} 元" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "定投: 每日 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "定投中"
+                        val dcaText = (if(h.dcaSchedule?.paused==true) "已暂停 · " else "") + DcaSchedules.describe(DcaSchedules.schedule(h,today())) + " · " + if ((h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO) "¥${h.dcaAmount?.stripTrailingZeros()?.toPlainString()} 元" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else "定投中"
                         addView(ui.badge(dcaText, ui.accent).apply {
                             setOnClickListener { setupDcaDialog(h) }
                         })
@@ -614,7 +674,7 @@ class MainActivity : Activity() {
             } }.show()
     }
     private fun fundDailyProfit(h: Holding, q: FundQuote?, date: String = today()): DisplayedDailyProfit? =
-        DailyProfitPresentation.forHolding(h, q, date)
+        CalendarSnapshots.display(portfolio,h,q,date)
     private fun refreshFunds() {
         if (refreshing) return
         if (portfolio.holdings.isEmpty()) { toast("先添加一只基金"); return }
@@ -622,7 +682,7 @@ class MainActivity : Activity() {
         val codes = portfolio.holdings.map { it.code }
         network({ client.quotes(codes) }, { rows ->
             refreshing = false; store.saveQuotes(rows); quotes = store.loadQuotes()
-            checkAndApplyDca()
+            checkAndApplyDca(); captureIncome()
             val valid = rows.count { it.nav != null }
             refreshEstimates(codes, if (valid > 0) "已更新 $valid 只净值" else "暂无新净值")
         }, { error -> refreshing = false; refreshEstimates(codes, "$error · 正式行情保留缓存") })
@@ -639,7 +699,7 @@ class MainActivity : Activity() {
         refreshing = true
         if (tab == 0) render()
         network({ client.enrichQuotes(snapshot, day, store::cache, store::putCache) }, { enriched ->
-            refreshing = false; store.saveQuotes(enriched); quotes = store.loadQuotes()
+            refreshing = false; store.saveQuotes(enriched); quotes = store.loadQuotes(); captureIncome(); refreshDcaHistory()
             val modeled = enriched.count { it.model != null }
             status = "净值按公布日期 · $modeled 只模型/预测 · 以行情日期为准"
             if (tab == 0) render()
@@ -762,7 +822,7 @@ class MainActivity : Activity() {
         }
     }
     private fun holdingActions(h: Holding) {
-        val labels = arrayOf("查看本地账目", "每日定投设置", "编辑持仓", "记录加仓", "记录减仓", "持仓校准 / 分红折算", if (h.starred) "取消特别关注" else "特别关注", "移动到分组", "移到最前", "删除基金及其操作记录")
+        val labels = arrayOf("查看本地账目", "定投计划设置", "编辑持仓", "记录加仓", "记录减仓", "持仓校准 / 分红折算", if (h.starred) "取消特别关注" else "特别关注", "移动到分组", "移到最前", "删除基金及其操作记录")
         ui.dialog().setTitle(h.name).setItems(labels) { _, i -> safe {
             when (i) {
                 0 -> showHoldingLedger(h)
@@ -843,23 +903,22 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) }
             val headerBox = ui.box(false).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                addView(ui.text("每日自动定投计划", 13f, ui.ink, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(ui.text("本地模拟定投计划", 13f, ui.ink, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
                 addView(ui.badge(if (hasDca) "定投进行中" else "未开启", if (hasDca) ui.accent else ui.muted))
             }
             addView(headerBox)
 
             if (hasDca) {
-                val planDesc = if ((h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ¥${h.dcaAmount?.stripTrailingZeros()?.toPlainString()} 元 (按公布净值折算)" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) "每日定投 ${h.dcaShares?.stripTrailingZeros()?.toPlainString() ?: ""} 份" else ""
-                val ruleDesc = if (h.dcaWeekdaysOnly) "仅周一至周五执行" else "每天均自动执行"
-                val lastDateDesc = "已自动执行并同步至: ${h.dcaLastDate ?: today()}"
-                addView(ui.text("$planDesc · $ruleDesc\n$lastDateDesc", 12f, ui.ink).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
+                val schedule=DcaSchedules.schedule(h,today())
+                addView(ui.text("${DcaSchedules.describe(schedule)} · ${schedule.currency}" + if(schedule.paused) " · 已暂停" else "",13f,ui.muted))
+                addView(ui.text("本机检查至 ${h.dcaLastDate ?: "尚未检查"}；正式价格到达后才记账",11f,ui.muted))
                 val budget = DcaBudget.daily(listOf(h), quotes)
-                addView(ui.text("单日预计投入 ¥${ui.amount(budget.total)}" + if (budget.missingPrices > 0) " · 等待净值" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) " · 按最新净值估算" else "", 13f, ui.accent, true))
+                addView(ui.text("每次预算 ${schedule.currency} ${ui.amount(budget.total)}" + if (budget.missingPrices > 0) " · 等待净值" else if ((h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO) " · 按最新净值估算" else "", 13f, ui.accent, true))
             } else {
-                addView(ui.text("设置每日定投后，每天打开或刷新系统会自动按计划增加份额，并加权计算平均成本。", 11f, ui.muted).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
+                addView(ui.text("打开或刷新时检查到期计划，等待对应日期的正式价格后模拟记账。不会实际扣款；缺失数据不会用成本价代替。", 11f, ui.muted).apply { setPadding(0, ui.dp(6), 0, ui.dp(8)) })
             }
 
-            val dcaBtn = ui.button(if (hasDca) "修改定投计划" else "开启每日定投") { setupDcaDialog(h) }
+            val dcaBtn = ui.button(if (hasDca) "修改定投计划" else "开启定投计划") { setupDcaDialog(h) }
             addView(dcaBtn)
         })
 
@@ -899,10 +958,11 @@ class MainActivity : Activity() {
         val plans = portfolio.holdings.filter { (it.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO || (it.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO }
         if (plans.isEmpty()) {
             ui.dialog().setTitle("定投计划").setMessage("暂无定投计划。可在基金卡片中点击“设为定投”添加。")
-                .setPositiveButton("关闭", null).show()
+                .setNeutralButton("执行记录") { _,_->showDcaHistory() }.setPositiveButton("关闭", null).show()
             return
         }
-        val budget = DcaBudget.daily(plans, quotes)
+        val budgets = DcaBudget.onDate(portfolio,quotes,today(),tradingCalendar)
+        val budget = budgets["CNY"] ?: DailyDcaBudget(BigDecimal.ZERO,0,0)
         val title = ui.box().apply {
             setPadding(ui.dp(24), ui.dp(20), ui.dp(24), ui.dp(12))
             addView(ui.text("定投计划", 20f, bold = true))
@@ -911,21 +971,25 @@ class MainActivity : Activity() {
                 addView(ui.text("¥${ui.amount(budget.total)}", 25f, ui.accent, true), LinearLayout.LayoutParams(0, -2, 1f))
                 addView(ui.badge("${plans.size} 项计划"))
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
-            addView(ui.text("每个执行日预计 · 全部分组", 11f, ui.muted))
+            addView(ui.text("今日计划投入 · 全部分组", 11f, ui.muted))
             if (budget.missingPrices > 0) addView(ui.text("已知 ¥${ui.amount(budget.knownAmount)}，${budget.missingPrices} 只等待净值", 11f, ui.muted))
+            budgets.filterKeys { it!="CNY" }.forEach { (currency,b)->addView(ui.text("$currency ${ui.amount(b.total)}",12f,ui.muted)) }
         }
         lateinit var dialog: AlertDialog
         val adapter = object : ArrayAdapter<Holding>(ui.context, android.R.layout.simple_list_item_1, plans) {
             override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
                 val h = getItem(position)!!
                 val groupName = portfolio.groups.firstOrNull { it.id == h.groupId }?.name.orEmpty()
-                return ui.dcaPlanCard(h, groupName, DcaBudget.daily(listOf(h), quotes)) {
+                return ui.dcaPlanCard(h, groupName, DcaBudget.daily(listOf(h), quotes),today(),DcaBudget.next(portfolio,h,today(),tradingCalendar),
+                    portfolio.executions.count { it.holdingId==h.id && it.status !in setOf(DcaStatus.RECORDED,DcaStatus.SKIPPED,DcaStatus.CANCELLED) },{
+                        safe { commit(DcaEngine.setPaused(portfolio,h.id,h.dcaSchedule?.paused!=true,today())); dialog.dismiss(); showDcaPlans() }
+                    }) {
                     dialog.dismiss()
                     portfolio.holdings.firstOrNull { it.id == h.id }?.let { setupDcaDialog(it) }
                 }
             }
         }
-        dialog = ui.dialog().setCustomTitle(title).setAdapter(adapter, null).setNegativeButton("关闭", null).create()
+        dialog = ui.dialog().setCustomTitle(title).setAdapter(adapter, null).setNeutralButton("执行记录") { _,_->showDcaHistory() }.setNegativeButton("关闭", null).create()
         dialog.setOnShowListener {
             dialog.listView.apply {
                 itemsCanFocus = true; divider = null
@@ -934,64 +998,42 @@ class MainActivity : Activity() {
         }
         dialog.show()
     }
+    private fun showDcaHistory(page: Int=0) {
+        val records=DcaEngine.history(portfolio)
+        val box=ui.box().apply { setPadding(ui.dp(20),ui.dp(8),ui.dp(20),ui.dp(8)) }
+        box.addView(ui.text("仅为本地模拟账本，不代表平台订单或实际扣款。跳过待执行记录不会增加份额。",12f,ui.muted))
+        records.filter { it.status==DcaStatus.RECORDED }.groupBy { it.currency }.forEach { (currency,rows)->
+            val total=rows.fold(BigDecimal.ZERO) { a,r->a+(r.amount ?: BigDecimal.ZERO) }
+            box.addView(ui.text("累计模拟投入 $currency ${ui.amount(total)} · ${rows.size} 期",15f,ui.accent,true))
+        }
+        val pages=((records.size+49)/50).coerceAtLeast(1); val index=page.coerceIn(0,pages-1)
+        lateinit var dialog: AlertDialog
+        if(records.isEmpty()) box.addView(ui.text("暂无执行记录",13f,ui.muted))
+        records.drop(index*50).take(50).forEach { e->box.addView(ui.bentoCard(12).apply {
+            addView(ui.text("${e.name} · ${e.code}",14f,bold=true))
+            val status=when(e.status) { DcaStatus.SCHEDULED->"已顺延 / 尚未到期"; DcaStatus.WAITING_CALENDAR->"等待交易日历"; DcaStatus.WAITING_NAV->"等待正式价格"; DcaStatus.WAITING_PREVIOUS->"等待前一期"; DcaStatus.REVIEW->"待核对"; DcaStatus.RECORDED->"已记账"; DcaStatus.SKIPPED->"已跳过"; DcaStatus.CANCELLED->"已取消" }
+            addView(ui.text("$status · 原计划 ${e.plannedDate}\n执行日 ${e.executionDate ?: "待定"}",12f,ui.accent))
+            addView(ui.text("${e.currency} ${ui.amount(e.amount)}" + (e.shares?.let { " · ${it.stripTrailingZeros().toPlainString()} 份" } ?: ""),13f,bold=true))
+            addView(ui.text(e.note,11f,ui.muted))
+            if(e.status !in setOf(DcaStatus.RECORDED,DcaStatus.SKIPPED,DcaStatus.CANCELLED)) addView(ui.button("跳过本期") {
+                safe { commit(DcaEngine.skip(portfolio,e.id)); checkAndApplyDca(); dialog.dismiss(); showDcaHistory(index) }
+            })
+        }) }
+        box.addView(ui.box(false).apply {
+            addView(ui.button("上一页") { dialog.dismiss(); showDcaHistory(index-1) }.apply { isEnabled=index>0 },LinearLayout.LayoutParams(0,-2,1f))
+            addView(ui.text("${index+1}/$pages",12f,ui.muted).apply { gravity=Gravity.CENTER },LinearLayout.LayoutParams(0,-2,1f))
+            addView(ui.button("下一页") { dialog.dismiss(); showDcaHistory(index+1) }.apply { isEnabled=index+1<pages },LinearLayout.LayoutParams(0,-2,1f))
+        })
+        dialog=ui.dialog().setTitle("定投执行记录").setView(ScrollView(this).apply { addView(box) }).setNeutralButton("重试更新") { _,_->refreshDcaHistory() }.setNegativeButton("关闭",null).create(); dialog.show()
+    }
     private fun setupDcaDialog(h: Holding) {
-        val box = ui.box().apply { setPadding(ui.dp(22), ui.dp(10), ui.dp(22), ui.dp(10)) }
-        val amountField = ui.field("每日定投金额 (元，如 10.00)", h.dcaAmount?.stripTrailingZeros()?.toPlainString() ?: "", true)
-        val weekdaySwitch = Switch(ui.context).apply {
-            text = "仅在交易日 (周一至周五) 执行"
-            setTextColor(ui.ink)
-            isChecked = h.dcaWeekdaysOnly
-            setPadding(0, ui.dp(8), 0, ui.dp(8))
-        }
-
-        box.addView(ui.text("每日定投设置", 16f, ui.ink, bold = true))
-        box.addView(ui.text("设置每日固定定投的金额。系统每天会自动根据公布净值折算份额、自动记账并加权更新持仓成本：", 12f, ui.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
-        box.addView(amountField)
-        box.addView(weekdaySwitch)
-
-        val builder = ui.dialog()
-            .setTitle("${h.name} · 定投")
-            .setView(ScrollView(this).apply { addView(box) })
-            .setNegativeButton("取消", null)
-            .setPositiveButton("保存并生效", null)
-
-        val hasExistingDca = (h.dcaAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO || (h.dcaShares ?: BigDecimal.ZERO) > BigDecimal.ZERO
-        if (hasExistingDca) {
-            builder.setNeutralButton("取消定投计划") { _, _ ->
-                safe {
-                    val cleared = h.copy(dcaShares = null, dcaAmount = null, dcaLastDate = null)
-                    commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) cleared else it }))
-                    toast("已取消 ${h.name} 的定投计划")
-                }
-            }
-        }
-
-        val dialog = builder.create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                try {
-                    val aVal = amountField.text.toString().trim()
-                    require(aVal.isNotBlank()) { "请输入每日定投的金额" }
-
-                    val amount = aVal.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: throw IllegalArgumentException("金额必须为大于0的数值")
-
-                    val updatedHolding = h.copy(
-                        dcaShares = null,
-                        dcaAmount = amount,
-                        dcaWeekdaysOnly = weekdaySwitch.isChecked,
-                        dcaLastDate = h.dcaLastDate ?: prevTradingDay()
-                    )
-                    commit(portfolio.copy(holdings = portfolio.holdings.map { if (it.id == h.id) updatedHolding else it }))
-                    checkAndApplyDca()
-                    render()
-                    toast("每日定投计划已保存，并已自动累计至今日！")
-                    dialog.dismiss()
-                } catch (e: Exception) {
-                    toast(e.message ?: "输入无效")
-                }
-            }
-        }
-        dialog.show()
+        val current=portfolio.holdings.firstOrNull { it.id==h.id } ?: return
+        val currency=quotes[h.code]?.currency ?: EstimationParser.currency(h.name)
+        DcaScheduleViews(ui).show(current,today(),currency,{ schedule,amount->
+            commit(DcaEngine.replacePlan(portfolio,h.id,schedule,amount,today())); checkAndApplyDca(); render(); refreshDcaHistory()
+            val effective=portfolio.holdings.first { it.id==h.id }.dcaSchedule!!.startDate
+            toast("计划已保存，$effective 起生效；正式价格公布后本地记账")
+        },{ safe { commit(DcaEngine.remove(portfolio,h.id)); toast("已停止计划，执行记录保留") } })
     }
     private fun settingsPage() {
         body.addView(ui.panel().apply {

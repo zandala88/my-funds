@@ -26,6 +26,6 @@ object PortfolioEditing {
     fun delete(p: Portfolio, ids: Set<String>): Portfolio {
         p.validate()
         require(ids.isNotEmpty() && p.holdings.map { it.id }.toSet().containsAll(ids)) { "请选择现有基金后再删除" }
-        return p.copy(holdings = p.holdings.filterNot { it.id in ids }.sortedBy { it.order }.mapIndexed { i, h -> h.copy(order = i) }, trades = p.trades.filterNot { it.holdingId in ids }).validate()
+        return p.copy(holdings = p.holdings.filterNot { it.id in ids }.sortedBy { it.order }.mapIndexed { i, h -> h.copy(order = i) }, trades = p.trades.filterNot { it.holdingId in ids }, executions = p.executions.map { if(it.holdingId in ids && it.status !in setOf(DcaStatus.RECORDED,DcaStatus.SKIPPED,DcaStatus.CANCELLED)) it.copy(status=DcaStatus.CANCELLED,note="基金已移除") else it }).validate()
     }
 }

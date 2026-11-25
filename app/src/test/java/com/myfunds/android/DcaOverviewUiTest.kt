@@ -40,7 +40,7 @@ class DcaOverviewUiTest {
         val root = activity.window.decorView
         root.measure(View.MeasureSpec.makeMeasureSpec(480, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
         root.layout(0, 0, 480, 800)
-        val title = views(root).filterIsInstance<TextView>().first { it.text.toString() == "每日定投预计" }
+        val title = views(root).filterIsInstance<TextView>().first { it.text.toString() == "今日计划投入" }
         val card = title.parent as ViewGroup
         for (text in views(card).filterIsInstance<TextView>()) {
             assertTrue("Overview text clipped: ${text.text}", text.bottom <= card.height - card.paddingBottom)
@@ -48,7 +48,7 @@ class DcaOverviewUiTest {
         assertTrue("DCA overview should be actionable", card.isClickable)
         card.performClick(); shadowOf(Looper.getMainLooper()).idle()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        val labels = views(dialog.window!!.decorView).filterIsInstance<TextView>().map { it.text.toString() }
+        val labels = (views(dialog.window!!.decorView)+(0 until dialog.listView.adapter.count).flatMap { views(dialog.listView.adapter.getView(it,null,dialog.listView)) }).filterIsInstance<TextView>().map { it.text.toString() }
         assertTrue(labels.any { it.contains("测试指数金额定投A") })
         assertTrue(labels.any { it.contains("测试指数份额定投C") })
         assertFalse(labels.any { it.contains("未定投基金") })
@@ -60,7 +60,7 @@ class DcaOverviewUiTest {
         edit!!.performClick(); shadowOf(Looper.getMainLooper()).idle()
         val editor = ShadowAlertDialog.getLatestAlertDialog()
         val fields = views(editor.window!!.decorView).filterIsInstance<android.widget.EditText>()
-        assertTrue(fields.any { it.hint.toString().startsWith("每日定投金额") && it.text.toString() == "10" })
+        assertTrue(fields.any { it.hint.toString().startsWith("每次定投金额") && it.text.toString() == "10" })
         assertFalse("定投不应支持设置份额", fields.any { it.hint.toString().contains("份额") })
         editor.dismiss(); controller.pause().stop().destroy()
         }

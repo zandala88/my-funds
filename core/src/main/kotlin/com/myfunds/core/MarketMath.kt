@@ -10,17 +10,10 @@ object MarketMath {
         return p.holdings.map { h -> portfolioDaily(p.copy(trades = grouped[h.id].orEmpty()), h, quotes[h.code], today) }
     }
     fun portfolioDaily(p: Portfolio, h: Holding, q: FundQuote?, today: String): DailyProfit? {
-        val trades = p.trades.filter { it.holdingId == h.id }
-        if (trades.any { it.kind == "CALIBRATE" && it.date >= today }) return null
-        val earlierCalibration = trades.any { it.kind == "CALIBRATE" && it.date < today }
-        val knownBaseline = h.confirmedDate?.let { it < today || (it == today && h.initialShares?.signum() == 0) } == true
-        if (!knownBaseline && !earlierCalibration) return if (h.shares.signum() == 0 && trades.isEmpty()) DailyProfit(BigDecimal.ZERO, false) else null
-        var opening = h.shares
-        trades.filter { it.date >= today }.forEach { t ->
-            opening = when (t.kind) { "BUY" -> opening - t.shares; "SELL" -> opening + t.shares; else -> opening }
-        }
-        if (opening.signum() < 0) return null
-        return daily(h.copy(shares = opening), q, today)
+        val opening=HoldingTimeline.opening(p,h,today).shares ?: return if(h.shares.signum()==0 && p.trades.none { it.holdingId==h.id }) DailyProfit(BigDecimal.ZERO,false) else null
+        val daily=daily(h.copy(shares=opening),q,today) ?: return null
+        val fees=p.trades.filter { it.holdingId==h.id && it.date==today }.fold(BigDecimal.ZERO) { a,t->a+t.fee }
+        return daily.copy(amount=(daily.amount-fees).setScale(2,RoundingMode.HALF_UP))
     }
     private fun precedingSession(date: String?, today: String): Boolean = runCatching {
         val start = java.time.LocalDate.parse(date)

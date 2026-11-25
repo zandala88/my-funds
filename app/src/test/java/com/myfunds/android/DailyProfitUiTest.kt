@@ -19,7 +19,7 @@ import org.robolectric.shadows.ShadowAlertDialog
 @Config(sdk = [28, 35], qualifiers = "w480dp-h800dp-mdpi")
 class DailyProfitUiTest {
     private val today = LocalDate.now(ZoneId.of("Asia/Shanghai"))
-    private val h = Holding("h", "000001", "日期测试基金", shares = BigDecimal("100"), cost = BigDecimal.ONE)
+    private val h = Holding("h", "000001", "日期测试基金", shares = BigDecimal("100"), cost = BigDecimal.ONE, confirmedDate=today.minusDays(10).toString(),initialShares=BigDecimal("100"))
     private fun quote(date: LocalDate) = FundQuote(h.code, h.name, BigDecimal("1.02"), date.toString(), change = BigDecimal("2"))
     private fun texts(view: View): List<String> = (if (view is TextView) listOf(view.text.toString()) else emptyList()) +
         if (view is ViewGroup) (0 until view.childCount).flatMap { texts(view.getChildAt(it)) } else emptyList()
@@ -164,7 +164,7 @@ class DailyProfitUiTest {
     @Test fun monetaryForecastUsesPredictionLabelAndDoesNotChangeHoldingPrice() {
         val q = quote(today.minusDays(1)).copy(nav = BigDecimal.ONE, change = null, kind = FundKind.MONEY, incomePerTenThousand = BigDecimal("0.5"),
             model = model(method = EstimateMethod.MONEY).copy(change = BigDecimal("0.005"), basisPrice = BigDecimal.ONE))
-        withPage(holdings = listOf(h.copy(shares = BigDecimal("10000"))), quotes = listOf(q)) { _, labels ->
+        withPage(holdings = listOf(h.copy(shares = BigDecimal("10000"),initialShares=BigDecimal("10000"))), quotes = listOf(q)) { _, labels ->
             assertTrue(labels.toString(), labels.any { it == "今日收益预测 " })
             assertTrue(labels.any { it == "今日估算 +0.50" })
             assertTrue(labels.any { it.contains("10,000.00") || it == "10000.00" })

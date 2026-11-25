@@ -65,5 +65,7 @@ class LocalStore(context: Context, name: String = "portfolio.db") : SQLiteOpenHe
     }
     fun cache(key: String): String? = read("cache", "key", key)
     fun putCache(key: String, value: String) { require(value.length <= 2 * 1024 * 1024); transaction { write(it, "cache", "key", key, value) } }
+    fun tradingCalendar(): TradingCalendar = runCatching { read("state","key","trading-calendar")?.let(TradingCalendar::decode) }.getOrNull() ?: TradingCalendar.builtin()
+    fun saveTradingCalendar(calendar: TradingCalendar) { transaction { write(it,"state","key","trading-calendar",calendar.encode()) } }
     fun clearCache() { transaction { it.delete("quotes", null, null); it.delete("cache", null, null) } }
 }

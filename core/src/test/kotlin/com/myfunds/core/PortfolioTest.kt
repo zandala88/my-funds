@@ -38,7 +38,7 @@ class PortfolioTest {
 
     @Test fun rejectsFutureCorruptAndDuplicateBackup() {
         val json = BackupCodec.encode(portfolio())
-        assertThrows(IllegalArgumentException::class.java) { BackupCodec.decode(json.replace("\"schemaVersion\":1", "\"schemaVersion\":999")) }
+        assertThrows(IllegalArgumentException::class.java) { BackupCodec.decode(json.replace("\"schemaVersion\":2", "\"schemaVersion\":999")) }
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.decode("broken") }
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.encode(portfolio().copy(holdings = listOf(holding, holding))) }
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.encode(portfolio().copy(holdings = listOf(holding.copy(groupId = "missing")))) }
@@ -75,7 +75,7 @@ class PortfolioTest {
         val p = Portfolio(holdings = listOf(baseHolding))
         // 2026-11-20 is Friday. Intermediate dates: 21 (Sat, skip), 22 (Sun, skip), 23 (Mon, execute), 24 (Tue, execute).
         val quotes = mapOf("000001" to FundQuote("000001", "华夏成长", d("2.00"), "2026-11-24"))
-        val updated = PortfolioOperations.applyDcaCatchUp(p, "2026-11-24", quotes)
+        val updated = PortfolioOperations.applyDcaCatchUp(p, "2026-11-24", quotes, listOf(DailyNav("000001","2026-11-23",d("2.00"))))
         // Two trades should be executed:
         assertEquals(2, updated.trades.size)
         assertTrue(updated.trades.all { it.kind == "DCA" })

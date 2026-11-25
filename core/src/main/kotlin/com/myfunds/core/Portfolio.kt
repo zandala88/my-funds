@@ -9,7 +9,7 @@ import java.util.UUID
 data class Holding(val id: String, val code: String, val name: String, val groupId: String = "default",
     val shares: BigDecimal = BigDecimal.ZERO, val cost: BigDecimal = BigDecimal.ZERO,
     val order: Int = 0, val starred: Boolean = false, val confirmedDate: String? = null, val initialShares: BigDecimal? = null,
-    val dcaShares: BigDecimal? = null, val dcaAmount: BigDecimal? = null, val dcaLastDate: String? = null, val dcaWeekdaysOnly: Boolean = true)
+    val dcaShares: BigDecimal? = null, val dcaAmount: BigDecimal? = null, val dcaLastDate: String? = null, val dcaWeekdaysOnly: Boolean = true, val dcaSchedule: DcaSchedule? = null)
 data class Group(val id: String, val name: String)
 data class Trade(val id: String, val holdingId: String, val kind: String, val shares: BigDecimal,
     val price: BigDecimal, val fee: BigDecimal, val date: String, val realized: BigDecimal = BigDecimal.ZERO)
@@ -20,7 +20,8 @@ data class AppSettings(val darkMode: Boolean = false, val autoRefresh: Boolean =
     val indexCodes: List<String> = listOf("1.000001", "0.399001", "0.399006"), val redUp: Boolean = true, val displaySize: DisplaySize = DisplaySize.STANDARD)
 data class Portfolio(val holdings: List<Holding> = emptyList(),
     val groups: List<Group> = listOf(Group("default", "默认分组")),
-    val trades: List<Trade> = emptyList(), val settings: AppSettings = AppSettings()) {
+    val trades: List<Trade> = emptyList(), val settings: AppSettings = AppSettings(),
+    val incomes: List<IncomeEntry> = emptyList(), val executions: List<DcaExecution> = emptyList()) {
     fun validate(): Portfolio {
         require(holdings.size <= 10000 && trades.size <= 100000 && groups.size in 1..1000) { "备份记录数量超过限制" }
         fun identity(ids: List<String>) { require(ids.all { it.isNotBlank() && it.length <= 100 } && ids.toSet().size == ids.size) { "记录标识为空或重复" } }
@@ -36,6 +37,7 @@ data class Portfolio(val holdings: List<Holding> = emptyList(),
             it.initialShares?.let { n -> validDecimal(n) }
             it.dcaShares?.let { n -> validDecimal(n) }
             it.dcaAmount?.let { n -> validDecimal(n) }
+            it.dcaSchedule?.validate()
             it.dcaLastDate?.let { date -> require(runCatching { LocalDate.parse(date) }.isSuccess) { "定投日期无效" } }
             it.confirmedDate?.let { date -> require(runCatching { LocalDate.parse(date) }.isSuccess && date <= LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()) { "初始日期无效或尚未发生" } }
         }
@@ -53,6 +55,7 @@ data class Portfolio(val holdings: List<Holding> = emptyList(),
             require(it.date >= (latest[it.holdingId] ?: "")) { "同一基金的操作日期不能倒序" }
             latest[it.holdingId] = it.date
         }
+        CalendarLedgerCodec.validate(incomes, executions)
         require(settings.sort in listOf("manual", "custom", "name", "profit", "change")) { "排序设置无效" }
         require(settings.indexCodes.size <= 12 && settings.indexCodes.distinct().size == settings.indexCodes.size &&
             settings.indexCodes.all { it.matches(Regex("[01]\\.[0-9]{6}")) }) { "指数设置无效" }
@@ -72,7 +75,9 @@ object PortfolioOperations {
     fun calibrate(p: Portfolio, id: String, shares: BigDecimal, cost: BigDecimal, date: String): Portfolio =
         trade(p, id, shares, cost, BigDecimal.ZERO, date, "CALIBRATE")
 
-    private fun trade(p: Portfolio, id: String, qty: BigDecimal, price: BigDecimal, fee: BigDecimal, date: String, kind: String): Portfolio {
+    internal fun recordDca(p: Portfolio,id: String,qty: BigDecimal,price: BigDecimal,date: String,tradeId: String)=trade(p,id,qty,price,BigDecimal.ZERO,date,"DCA",tradeId)
+
+    private fun trade(p: Portfolio, id: String, qty: BigDecimal, price: BigDecimal, fee: BigDecimal, date: String, kind: String, tradeId: String = UUID.randomUUID().toString()): Portfolio {
         p.validate(); validDecimal(qty); validDecimal(price); validDecimal(fee)
         require(runCatching { LocalDate.parse(date) }.isSuccess) { "操作日期无效" }
         require(kind == "CALIBRATE" || (qty > BigDecimal.ZERO && price > BigDecimal.ZERO)) { "份额与净值必须大于零" }
@@ -89,53 +94,18 @@ object PortfolioOperations {
         }
         val realized = if (kind == "SELL") (qty * (price - old.cost) - fee).setScale(2, RoundingMode.HALF_UP) else BigDecimal.ZERO
         return p.copy(holdings = p.holdings.map { if (it.id == id) next else it },
-            trades = p.trades + Trade(UUID.randomUUID().toString(), id, kind, qty, price, fee, date, realized)).validate()
+            trades = p.trades + Trade(tradeId, id, kind, qty, price, fee, date, realized)).validate()
     }
 
-    fun applyDcaCatchUp(p: Portfolio, today: String, quotes: Map<String, FundQuote> = emptyMap()): Portfolio {
-        val todayDate = runCatching { LocalDate.parse(today) }.getOrNull() ?: return p
-        var currentPortfolio = p
-        for (holding in p.holdings) {
-            val hasDcaShares = holding.dcaShares != null && holding.dcaShares > BigDecimal.ZERO
-            val hasDcaAmount = holding.dcaAmount != null && holding.dcaAmount > BigDecimal.ZERO
-            if (!hasDcaShares && !hasDcaAmount) continue
-
-            val startDate = holding.dcaLastDate ?: holding.confirmedDate ?: today
-            var d = runCatching { LocalDate.parse(startDate) }.getOrNull() ?: todayDate
-            if (holding.dcaLastDate == null && d == todayDate) {
-                d = d.minusDays(1)
-            }
-            var nextDate = d.plusDays(1)
-            var updatedHolding = currentPortfolio.holdings.first { it.id == holding.id }
-            var executedAny = false
-
-            while (!nextDate.isAfter(todayDate)) {
-                val isWeekend = nextDate.dayOfWeek == java.time.DayOfWeek.SATURDAY || nextDate.dayOfWeek == java.time.DayOfWeek.SUNDAY
-                val shouldExecute = !holding.dcaWeekdaysOnly || !isWeekend
-                if (shouldExecute) {
-                    val q = quotes[holding.code]
-                    val unitPrice = q?.nav?.takeIf { it > BigDecimal.ZERO } ?: updatedHolding.cost.takeIf { it > BigDecimal.ZERO } ?: BigDecimal.ONE
-                    val addedShares = if (hasDcaShares) {
-                        holding.dcaShares!!
-                    } else {
-                        holding.dcaAmount!!.divide(unitPrice, 4, RoundingMode.HALF_UP)
-                    }
-                    if (addedShares > BigDecimal.ZERO) {
-                        currentPortfolio = trade(currentPortfolio, holding.id, addedShares, unitPrice, BigDecimal.ZERO, nextDate.toString(), "DCA")
-                        updatedHolding = currentPortfolio.holdings.first { it.id == holding.id }
-                        executedAny = true
-                    }
-                }
-                nextDate = nextDate.plusDays(1)
-            }
-            if (executedAny || holding.dcaLastDate != today) {
-                currentPortfolio = currentPortfolio.copy(holdings = currentPortfolio.holdings.map {
-                    if (it.id == holding.id) it.copy(dcaLastDate = today) else it
-                })
-            }
+    fun applyDcaCatchUp(p: Portfolio, today: String, quotes: Map<String, FundQuote> = emptyMap(), history: List<DailyNav> = emptyList()): Portfolio {
+        val dated = quotes.values.mapNotNull { q ->
+            val nav=q.nav?.takeIf { it.signum()>0 } ?: return@mapNotNull null
+            val date=q.date ?: return@mapNotNull null
+            DailyNav(q.code,date,nav,currency=q.currency,kind=q.kind)
         }
-        return currentPortfolio
+        return DcaEngine.advance(p,today,history+dated,TradingCalendar.builtin()).portfolio
     }
+
 }
 
 data class PortfolioSummary(val marketValue: BigDecimal?, val profit: BigDecimal?, val realized: BigDecimal, val missing: Int) {

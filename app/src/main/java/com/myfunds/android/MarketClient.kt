@@ -28,8 +28,8 @@ class MarketClient(private val transport: ((String) -> String)? = null) {
         try {
             if (epoch != cancellationEpoch.get()) throw CancellationException("刷新已取消")
             connection.connectTimeout = 10000; connection.readTimeout = 12000
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0 MyFunds/0.8 Android")
-            connection.setRequestProperty("Referer", if (URL(url).host == "qt.gtimg.cn") "https://gu.qq.com/" else "https://fund.eastmoney.com/")
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 MyFunds/0.9 Android")
+            connection.setRequestProperty("Referer", if (URL(url).host == "qt.gtimg.cn") "https://gu.qq.com/" else if(URL(url).host=="api.fund.eastmoney.com") "https://fundf10.eastmoney.com/" else "https://fund.eastmoney.com/")
             require(connection.responseCode in 200..299) { "行情请求失败（${connection.responseCode}）" }
             return connection.inputStream.use { input ->
                 val bytes = readBounded(input, 4 * 1024 * 1024)
@@ -51,6 +51,10 @@ class MarketClient(private val transport: ((String) -> String)? = null) {
         return EstimationClient({ url -> get(url, epoch) }, read, write, checkCancelled = {
             if (epoch != cancellationEpoch.get()) throw CancellationException("刷新已取消")
         }).enrich(rows, day)
+    }
+    internal fun calendarData(read: (String)->String?,write: (String,String)->Unit): CalendarDataClient {
+        val epoch=cancellationEpoch.get()
+        return CalendarDataClient({ url->get(url,epoch) },read,write)
     }
     fun history(code: String, range: String = "y", yield: Boolean = false): List<ChartPoint> = MarketParser.history(
         fund("FundMApi/${if (yield) "FundYieldDiagramNew" else "FundNetDiagram"}.ashx", mapOf("FCODE" to code, "RANGE" to range)), if (yield) "YIELD" else "DWJZ")

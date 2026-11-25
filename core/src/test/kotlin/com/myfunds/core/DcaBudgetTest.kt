@@ -35,4 +35,15 @@ class DcaBudgetTest {
         val quote = FundQuote("000001", "测试指数A", BigDecimal.ZERO, "2026-11-24")
         assertNull(DcaBudget.daily(listOf(base.copy(dcaShares = d("5"))), mapOf("000001" to quote)).total)
     }
+    @Test fun todayBudgetExcludesPausedAndWrongWeekdayPlansAndSeparatesCurrencies() {
+        val weekly=DcaSchedule(DcaFrequency.WEEKLY,"2026-11-01",weekDay=3,revision="w")
+        val p=Portfolio(holdings=listOf(base.copy(dcaAmount=d("10"),dcaSchedule=weekly),
+            base.copy(id="usd",code="000002",dcaAmount=d("20"),dcaSchedule=weekly.copy(currency="USD")),
+            base.copy(id="paused",code="000003",dcaAmount=d("50"),dcaSchedule=weekly.copy(paused=true)),
+            base.copy(id="otherDay",code="000004",dcaAmount=d("99"),dcaSchedule=weekly.copy(weekDay=4))))
+        val result=DcaBudget.onDate(p,emptyMap(),"2026-11-25",TradingCalendar.builtin())
+        assertEquals(d("10"),result["CNY"]!!.total); assertEquals(d("20"),result["USD"]!!.total)
+        assertEquals(1,result["CNY"]!!.plans)
+    }
+
 }
