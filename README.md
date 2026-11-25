@@ -2,15 +2,15 @@
 
 个人使用的轻量原生安卓基金工具。持仓、操作记录和设置保存在手机，联网用于查询基金行情、名称等公开资料，换机通过文件备份完成。
 
-当前源码版本 **0.9.0**（已发布下载包仍为 0.7.0），支持 **Android 8.0 及以上**。无需账号、自建服务器、域名或推送服务。
+当前版本 **0.9.0**，支持 **Android 8.0 及以上**。无需账号、自建服务器、域名或推送服务。
 
 ## 下载
 
 可在 GitHub Releases 下载最新安装包及校验文件：
 
 - 📦 **[GitHub Releases 最新版本下载](https://github.com/zandala88/my-funds/releases/latest)**
-  - `my-funds-v0.7.0-arm64.apk` (~4.82 MiB，推荐主流手机)
-  - `my-funds-v0.7.0-universal.apk` (~14.01 MiB，通用架构兼容包)
+  - [my-funds-v0.9.0-arm64.apk](https://github.com/zandala88/my-funds/releases/download/v0.9.0/my-funds-v0.9.0-arm64.apk) (~4.89 MiB，推荐主流手机)
+  - [my-funds-v0.9.0-universal.apk](https://github.com/zandala88/my-funds/releases/download/v0.9.0/my-funds-v0.9.0-universal.apk) (~14.07 MiB，通用架构兼容包)
 
 ## 开源协议
 
